@@ -28,8 +28,8 @@ func git(dir string, env []string, args ...string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), err
 }
 
-func openRepo() (*Repo, error) {
-	root, err := git(".", nil, "rev-parse", "--show-toplevel")
+func openRepo(dir string) (*Repo, error) {
+	root, err := git(dir, nil, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, err
 	}

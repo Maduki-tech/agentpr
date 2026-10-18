@@ -14,6 +14,9 @@ const usage = `agentpr: review the changes a coding agent made, like a pull requ
 
   agentpr [--base <ref>]          open the review TUI for the current branch
   agentpr reply <thread-id> <text> answer a Thread (used by the Author)
+  agentpr install                  open agentpr next to Claude in herdr after each turn (Claude Code Stop hook)
+  agentpr uninstall                remove that hook
+  agentpr hook                     the hook itself, run by Claude Code
 `
 
 func main() {
@@ -27,7 +30,28 @@ func main() {
 }
 
 func run(base string, args []string) error {
-	repo, err := openRepo()
+	if len(args) == 1 {
+		switch args[0] {
+		case "hook":
+			runHook(os.Stdin)
+			return nil
+		case "install", "uninstall":
+			path, err := settingsPath()
+			if err != nil {
+				return err
+			}
+			edit := installHook
+			if args[0] == "uninstall" {
+				edit = uninstallHook
+			}
+			changed, err := edit(path)
+			if err == nil {
+				fmt.Printf("%s: %s (changed: %v)\n", args[0], path, changed)
+			}
+			return err
+		}
+	}
+	repo, err := openRepo(".")
 	if err != nil {
 		return err
 	}
