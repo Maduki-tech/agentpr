@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -393,6 +394,7 @@ func (m *model) mouse(e tea.MouseMsg) {
 		return
 	}
 	switch {
+	case m.rows[i].Kind == KGap && e.Action != tea.MouseActionRelease:
 	case e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft:
 		m.msg = ""
 		lo, hi := m.cur, m.cur
@@ -416,7 +418,22 @@ func (m *model) mouse(e tea.MouseMsg) {
 	}
 }
 
-func (m *model) move(d int) { m.cur = max(0, min(len(m.rows)-1, m.cur+d)) }
+func (m *model) move(d int) {
+	m.cur = max(0, min(len(m.rows)-1, m.cur+d))
+	m.offGap(d)
+}
+
+// offGap steps the cursor off a spacer row, up when dir < 0. A spacer always sits between
+// two files, so both neighbours exist.
+func (m *model) offGap(dir int) {
+	if m.rows[m.cur].Kind == KGap {
+		if dir < 0 {
+			m.cur--
+		} else {
+			m.cur++
+		}
+	}
+}
 
 func (m *model) jump(dir int, pred func(Row) bool) {
 	if i := m.next(dir, pred); i >= 0 {
@@ -620,6 +637,7 @@ func (m *model) rebuild() {
 		best = old
 	}
 	m.cur = max(0, min(len(m.rows)-1, best))
+	m.offGap(1)
 	if m.mode == mVisual && (m.anchor >= len(m.rows) || m.rows[m.anchor].Path != m.rows[m.cur].Path) {
 		m.mode = mNormal
 	}
@@ -649,9 +667,12 @@ func (m *model) build() {
 			}
 		}
 	}
-	for _, f := range files {
+	for n, f := range files {
 		if h := m.hl[f.Path]; h == nil || !slices.Equal(h.lines, f.Lines) {
 			m.hl[f.Path] = &highlight{lines: f.Lines}
+		}
+		if n > 0 {
+			rows = append(rows, Row{Kind: KGap})
 		}
 		rows = append(rows, Row{Kind: KFile, Path: f.Path})
 		at := map[int][]*Thread{}
@@ -797,9 +818,11 @@ func (m *model) renderRow(i int, selected, hovered bool) string {
 	switch r.Kind {
 	case KTop:
 		s, st = r.Text, stTop
+	case KGap:
+		return stCtx.Width(m.diffW()).Render("")
 	case KFile:
-		s, st = "▌ "+r.Path, stFile
-	case KHunk, KMeta:
+		st = stFile
+	case KHunk:
 		s, st = r.Line.Text, stHunk
 	case KThread:
 		s, st = "           "+r.Text, stThread
@@ -837,7 +860,33 @@ func (m *model) renderRow(i int, selected, hovered bool) string {
 		}
 	}
 	w := m.diffW()
+	if r.Kind == KFile {
+		s = m.fileHeader(r.Path, st, w-1)
+	}
 	return st.Width(w).Render(ansi.Truncate(s, w-1, "…"))
+}
+
+// fileHeader is a file's bar: path with its directory dimmed, and right-aligned the status and
+// +/- counts, dropped when the row is too narrow to show the path too.
+func (m *model) fileHeader(p string, st lipgloss.Style, w int) string {
+	f := File{Path: p}
+	if i := slices.IndexFunc(m.files(), func(f File) bool { return f.Path == p }); i >= 0 {
+		f = m.files()[i]
+	}
+	bg := st.GetBackground()
+	dim := stDone.Background(bg)
+	dir, name := path.Split(p) // git paths always use /
+	left := st.Render("▌ ") + dim.Render(dir) + st.Render(name)
+	right := dim.Render(f.Status)
+	if add, del := f.stats(); add+del > 0 {
+		right += dim.Render("  ") + stAdd.Background(bg).Render(fmt.Sprintf("+%d", add)) + dim.Render(" ") + stDel.Background(bg).Render(fmt.Sprintf("−%d", del))
+	}
+	right += dim.Render(" ")
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 2 {
+		return left
+	}
+	return left + st.Render(strings.Repeat(" ", gap)) + right
 }
 
 func (m *model) status() string {

@@ -292,7 +292,7 @@ type Kind int
 const (
 	KTop Kind = iota
 	KFile
-	KMeta
+	KGap // blank spacer row before a file header; the cursor never stops on it
 	KHunk
 	KCtx
 	KAdd
@@ -317,8 +317,21 @@ func (l Line) num() int {
 }
 
 type File struct {
-	Path  string
-	Lines []Line
+	Path   string
+	Status string // new, deleted, modified or "mode 100644 → 100755", plus " · binary"
+	Lines  []Line
+}
+
+// stats counts the File's added and removed lines.
+func (f File) stats() (add, del int) {
+	for _, l := range f.Lines {
+		if l.Kind == KAdd {
+			add++
+		} else if l.Kind == KDel {
+			del++
+		}
+	}
+	return add, del
 }
 
 func parseDiff(s string) []File {
@@ -329,7 +342,7 @@ func parseDiff(s string) []File {
 	for _, l := range strings.Split(s, "\n") {
 		switch {
 		case strings.HasPrefix(l, "diff --git "):
-			files = append(files, File{})
+			files = append(files, File{Status: "modified"})
 			cur = &files[len(files)-1]
 			if i := strings.LastIndex(l, " b/"); i >= 0 {
 				cur.Path = l[i+3:]
@@ -345,10 +358,19 @@ func parseDiff(s string) []File {
 			cur.Lines = append(cur.Lines, Line{Kind: KHunk, Text: l})
 			inHunk = true
 		case !inHunk:
+			// Git's meta lines fold into Status; index lines say nothing a reviewer needs.
 			if p, ok := strings.CutPrefix(l, "+++ b/"); ok {
 				cur.Path = p
-			} else if strings.HasPrefix(l, "new file") || strings.HasPrefix(l, "deleted file") || strings.HasPrefix(l, "Binary") {
-				cur.Lines = append(cur.Lines, Line{Kind: KMeta, Text: l})
+			} else if strings.HasPrefix(l, "new file") {
+				cur.Status = "new"
+			} else if strings.HasPrefix(l, "deleted file") {
+				cur.Status = "deleted"
+			} else if m, ok := strings.CutPrefix(l, "old mode "); ok {
+				cur.Status = "mode " + m
+			} else if m, ok := strings.CutPrefix(l, "new mode "); ok {
+				cur.Status += " → " + m
+			} else if strings.HasPrefix(l, "Binary") {
+				cur.Status += " · binary"
 			}
 		case strings.HasPrefix(l, "+"):
 			cur.Lines = append(cur.Lines, Line{Kind: KAdd, Text: l, New: n})
