@@ -142,6 +142,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(msg.Width - 2)
 		if m.d.state != nil {
 			m.rebuild()
+			m.follow()
 		}
 	case loaded:
 		var next tea.Cmd
@@ -180,11 +181,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case drafted:
 		m.gotDraft(msg)
 	case tea.KeyMsg:
+		cur, typing := m.cur, m.typing()
 		cmd := m.key(msg)
+		if m.cur != cur || m.typing() != typing { // the input box shrinks the view
+			m.follow()
+		}
 		cmd, m.cmd = tea.Batch(cmd, m.cmd), nil
 		return m, cmd
 	case tea.MouseMsg:
+		cur := m.cur
 		m.mouse(msg)
+		if m.cur != cur {
+			m.follow()
+		}
 		cmd := m.cmd
 		m.cmd = nil
 		return m, cmd
@@ -341,7 +350,7 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// mouse: wheel scrolls, hover highlights, click selects a row or file, drag selects lines,
+// mouse: wheel scrolls the view, hover highlights, click selects a row or file, drag selects lines,
 // and clicking the current row (or inside the selection) comments on it, like Enter.
 func (m *model) mouse(e tea.MouseMsg) {
 	m.mx, m.my = e.X, e.Y
@@ -354,10 +363,10 @@ func (m *model) mouse(e tea.MouseMsg) {
 	}
 	switch e.Button {
 	case tea.MouseButtonWheelUp:
-		m.move(-3)
+		m.scroll(-3)
 		return
 	case tea.MouseButtonWheelDown:
-		m.move(3)
+		m.scroll(3)
 		return
 	}
 	if m.mode != mNormal && m.mode != mVisual {
@@ -415,6 +424,20 @@ func (m *model) mouse(e tea.MouseMsg) {
 			m.enter()
 		}
 		m.armed = false
+	}
+}
+
+// scroll moves the view, not the cursor, which may go off screen until it next moves.
+func (m *model) scroll(d int) {
+	m.top = max(0, min(len(m.rows)-m.viewH(), m.top+d))
+}
+
+// follow scrolls just enough to show the cursor. Only cursor moves call it, so a reload keeps the scroll.
+func (m *model) follow() {
+	if vh := m.viewH(); m.cur < m.top {
+		m.top = m.cur
+	} else if m.cur >= m.top+vh {
+		m.top = m.cur - vh + 1
 	}
 }
 
@@ -753,12 +776,7 @@ func (m *model) View() string {
 		return "loading… " + m.msg
 	}
 	vh := m.viewH()
-	if m.cur < m.top {
-		m.top = m.cur
-	}
-	if m.cur >= m.top+vh {
-		m.top = m.cur - vh + 1
-	}
+	m.top = max(0, min(len(m.rows)-vh, m.top)) // rows may have shrunk since the last scroll
 
 	// File list, scrolled so the current file stays visible.
 	files, curPath, curIdx := m.files(), m.rows[m.cur].Path, 0
