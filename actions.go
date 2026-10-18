@@ -38,7 +38,7 @@ func quick(s GitState) (string, act, string) {
 		return "Commit", aNone, "detached HEAD: check out a branch first"
 	case s.Dirty && !s.Remote:
 		return "Commit", aCommit, ""
-	case s.Dirty && open:
+	case s.Dirty && (open || s.NoPR != ""):
 		return "Commit & push", aCommitPush, ""
 	case s.Dirty:
 		return "Commit, push & create PR", aCommitPushPR, ""
@@ -46,7 +46,7 @@ func quick(s GitState) (string, act, string) {
 		return "Commit", aNone, "nothing to commit"
 	case s.Behind > 0:
 		return "Pull", aNone, "the branch is behind its upstream: pull first"
-	case s.Ahead > 0 && (open || s.Default):
+	case s.Ahead > 0 && (open || s.Default || s.NoPR != ""):
 		return "Push", aPush, ""
 	case s.Ahead > 0:
 		return "Push & create PR", aPR, ""
@@ -54,6 +54,8 @@ func quick(s GitState) (string, act, string) {
 		return "Merge PR", aMerge, ""
 	case s.PR != nil && s.PR.State == "MERGED":
 		return "Merged", aNone, fmt.Sprintf("PR #%d is merged", s.PR.Number)
+	case s.Delta > 0 && !s.Default && s.NoPR != "":
+		return "Create PR", aNone, s.NoPR
 	case s.Delta > 0 && !s.Default:
 		return "Create PR", aPR, ""
 	}
@@ -67,13 +69,13 @@ type item struct {
 }
 
 func menuItems(s GitState) []item {
-	open, branch := s.PR != nil && s.PR.State == "OPEN", s.Branch != "HEAD"
+	open, branch, forge := s.PR != nil && s.PR.State == "OPEN", s.Branch != "HEAD", s.NoPR == ""
 	return []item{
 		{"Commit", aCommit, branch && s.Dirty},
 		{"Push", aPush, branch && s.Remote && s.Ahead > 0 && s.Behind == 0},
-		{"Create PR", aPR, branch && s.Remote && !open && !s.Default && s.Delta > 0},
-		{"Merge PR", aMerge, open},
-		{"View PR", aViewPR, s.PR != nil},
+		{"Create PR", aPR, forge && branch && s.Remote && !open && !s.Default && s.Delta > 0},
+		{"Merge PR", aMerge, forge && open},
+		{"View PR", aViewPR, forge && s.PR != nil},
 	}
 }
 
@@ -98,7 +100,7 @@ type prMsg struct {
 
 func (m *model) gitState() GitState {
 	s := m.d.git
-	s.PR = m.pr
+	s.PR, s.NoPR = m.pr, m.noPR
 	return s
 }
 
@@ -146,10 +148,6 @@ func (m *model) menuKey(s string) {
 func (m *model) run(a act) {
 	if m.busy != "" {
 		m.msg = m.busy + " still running"
-		return
-	}
-	if (a == aCommitPushPR || a == aPR || a == aMerge || a == aViewPR) && m.ghErr != "" {
-		m.msg = m.ghErr
 		return
 	}
 	r := *m.repo
@@ -371,7 +369,8 @@ func (m *model) gotPR(p prMsg) {
 	if e != m.ghErr && e != "" {
 		m.msg = e
 	}
-	m.pr, m.ghErr = p.pr, e
+	u, _ := p.err.(noPR) // a network failure leaves PRs available
+	m.pr, m.ghErr, m.noPR = p.pr, e, string(u)
 }
 
 // menuBox places the open menu at the top right of the diff pane, below the button:

@@ -88,6 +88,7 @@ type model struct {
 	cmd      tea.Cmd // started by a key or click handler, picked up by Update
 	pr       *PR
 	ghErr    string
+	noPR     string // GitState.NoPR, from the last gh answer
 	bar      []tool // the toolbar's buttons as last drawn, for the mouse
 	help     bool   // the key list is shown
 	gen      int    // counts input boxes, so a late draft lands only in the box it was made for

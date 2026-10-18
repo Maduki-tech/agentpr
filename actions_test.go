@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,9 +31,41 @@ func TestQuick(t *testing.T) {
 		{GitState{Branch: "f", Remote: true, Delta: 1, PR: merged}, "Merged", aNone},
 		{GitState{Branch: "f", Remote: true, Delta: 1}, "Create PR", aPR},
 		{GitState{Branch: "main", Default: true, Remote: true}, "Commit", aNone},
+		// No GitHub remote, gh missing or logged out: never an action that needs gh.
+		{GitState{Branch: "f", Dirty: true, Remote: true, NoPR: "x"}, "Commit & push", aCommitPush},
+		{GitState{Branch: "f", Dirty: true, NoPR: "x"}, "Commit", aCommit},
+		{GitState{Branch: "f", Remote: true, Ahead: 1, Delta: 1, NoPR: "x"}, "Push", aPush},
+		{GitState{Branch: "f", Remote: true, Delta: 1, NoPR: "x"}, "Create PR", aNone},
 	} {
 		if got, a, _ := quick(c.s); got != c.want || a != c.a {
 			t.Errorf("%+v: got %q/%d, want %q/%d", c.s, got, a, c.want, c.a)
+		}
+	}
+}
+
+func TestMenuNoPR(t *testing.T) {
+	on := map[string]bool{}
+	for _, it := range menuItems(GitState{Branch: "f", Dirty: true, Remote: true, Ahead: 1, Delta: 1, NoPR: "x", PR: &PR{State: "OPEN"}}) {
+		on[it.label] = it.on
+	}
+	if want := map[string]bool{"Commit": true, "Push": true, "Create PR": false, "Merge PR": false, "View PR": false}; !maps.Equal(on, want) {
+		t.Fatalf("got %v", on)
+	}
+}
+
+func TestGhFail(t *testing.T) {
+	args := []string{"pr", "view", "f"}
+	for _, c := range []struct {
+		stderr, want string
+		noPR         bool
+	}{
+		{"none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`", "origin isn't a GitHub remote: PRs unavailable", true},
+		{"To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.", "not logged in to GitHub, run: gh auth login", true},
+		{"error connecting to api.github.com\n", "gh pr view: error connecting to api.github.com", false},
+	} {
+		err := ghFail(args, c.stderr)
+		if _, ok := err.(noPR); err.Error() != c.want || ok != c.noPR {
+			t.Errorf("%q: got %q noPR=%v", c.stderr, err, ok)
 		}
 	}
 }
