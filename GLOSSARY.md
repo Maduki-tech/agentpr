@@ -42,3 +42,9 @@ _Avoid_: Draft
 
 **Outdated Thread**:
 A Thread whose original snippet can no longer be found in the Changeset; it stays visible with the snippet it was written on.
+
+**Pull request (PR)**:
+A real GitHub pull request, opened from the branch with the Action button once the Changeset is ready to ship. Not the Changeset itself.
+
+**Action button**:
+The button at the right of the status line that ships the Changeset: its label and action follow the branch's state (commit, push, create PR, merge PR), and its menu offers each step on its own.

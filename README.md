@@ -51,10 +51,22 @@ What gets reviewed (the Changeset) is everything that differs from the Base: com
 | `Enter` | Comment on line, selection, file header, or top row (whole Changeset); reply when on a Thread |
 | `R` | Resolve / unresolve Thread |
 | `S` | Submit Review: `r` request changes, `a` approve |
+| `c` | Run the action button (see below) |
+| `C` | Git menu: Commit, Push, Create PR, Merge PR, View PR |
 | `i` | Toggle full Changeset / changes since last Review |
 | `/`, `n` / `N` | Search |
 | `q` | Quit (pending comments are kept) |
 | Mouse | Wheel scrolls, click a file in the list to show only that file (click again or `Esc` for all), click selects a row, drag selects lines, click the selected row/lines to comment |
+
+### Shipping
+
+When the Changeset looks good, ship it from the action button at the right of the status line (`c`, or click it; `▾` or `C` opens the menu with each step). Its label follows the branch: `Commit` (no remote), `Commit, push & create PR`, `Commit & push` once a PR exists, `Push & create PR` / `Create PR` for committed work, then `Merge PR`.
+
+- A commit stages everything the Changeset shows (tracked and untracked). On `main`/`master` you're asked for a new branch first, so a PR is possible; open Threads move with you.
+- Creating a PR pushes the branch, then asks for the base branch (preselected: the Base's branch) and the title (first line) and body, prefilled with the commit message.
+- Merging asks for the target branch (preselected: the PR's base; another one retargets the PR) and the method: merge, squash (preselected) or rebase.
+
+PRs use the [GitHub CLI](https://cli.github.com) (`gh`); if it's missing or not logged in, the status line says so. In menus: `j`/`k` or the mouse to move, `Enter` or click to pick, `Esc` to close.
 
 In the comment box: `Enter` saves, `Ctrl-J` adds a newline, `Esc` cancels.
 
