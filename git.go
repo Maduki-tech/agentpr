@@ -130,6 +130,7 @@ type GitState struct {
 	Ahead, Behind int // commits on no remote yet / upstream commits missing here
 	Delta         int // commits since the Base
 	PR            *PR
+	NoPR          string // why PRs can't work here (gh missing, logged out, no GitHub remote); "" if they can
 }
 
 func (r *Repo) State(base, tree string) GitState {
@@ -205,24 +206,36 @@ func (r *Repo) Push() error {
 	return err
 }
 
-// gh runs the GitHub CLI, turning "not installed" and "not logged in" into messages a person can act on.
+// noPR is a gh error meaning PRs can't work in this repo at all, unlike a network failure.
+type noPR string
+
+func (e noPR) Error() string { return string(e) }
+
+// gh runs the GitHub CLI, turning "not installed", "not logged in" and "not on GitHub" into messages a person can act on.
 func gh(dir string, args ...string) (string, error) {
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1")
 	out, err := cmd.Output()
 	if errors.Is(err, exec.ErrNotFound) {
-		return "", errors.New("gh not found: PRs need the GitHub CLI (cli.github.com)")
+		return "", noPR("gh not found: PRs need the GitHub CLI (cli.github.com)")
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		msg := strings.TrimSpace(string(ee.Stderr))
-		if strings.Contains(msg, "gh auth login") {
-			msg = "not logged in to GitHub, run: gh auth login"
-		}
-		return "", fmt.Errorf("gh %s: %s", strings.Join(args[:min(2, len(args))], " "), msg)
+		return "", ghFail(args, string(ee.Stderr))
 	}
 	return strings.TrimSpace(string(out)), err
+}
+
+func ghFail(args []string, stderr string) error {
+	msg := strings.TrimSpace(stderr)
+	switch {
+	case strings.Contains(msg, "known GitHub host"): // its hint also says "gh auth login"
+		return noPR("origin isn't a GitHub remote: PRs unavailable")
+	case strings.Contains(msg, "gh auth login"):
+		return noPR("not logged in to GitHub, run: gh auth login")
+	}
+	return fmt.Errorf("gh %s: %s", strings.Join(args[:min(2, len(args))], " "), msg)
 }
 
 type PR struct {
