@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ var (
 	stThread  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	stSel     = lipgloss.NewStyle().Background(lipgloss.Color("238"))
+	stHover   = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	stStatus  = lipgloss.NewStyle().Reverse(true)
 	stCurFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 )
@@ -71,6 +73,7 @@ type model struct {
 	d        loaded
 	sig      string
 	showFull bool
+	focus    string // only this file is shown in the diff pane
 	rows     []Row
 	cur, top int
 	anchor   int // visual-mode start row
@@ -82,6 +85,10 @@ type model struct {
 	w, h     int
 	msg      string
 	prompt   string // Review waiting for an agent pick
+	mx, my   int    // mouse position, for hover
+	press    int    // row the left button went down on
+	armed    bool   // press landed on the current row/selection; release there comments
+	listOff  int    // first file shown in the file list
 }
 
 func newModel(r *Repo, base string) *model {
@@ -90,7 +97,7 @@ func newModel(r *Repo, base string) *model {
 	ta.Prompt = "│ "
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.SetHeight(3)
-	return &model{repo: r, baseFlag: base, input: ta}
+	return &model{repo: r, baseFlag: base, input: ta, mx: -1, my: -1}
 }
 
 func (m *model) Init() tea.Cmd { return m.load }
@@ -145,6 +152,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.load
 	case tea.KeyMsg:
 		return m, m.key(msg)
+	case tea.MouseMsg:
+		m.mouse(msg)
 	}
 	return m, nil
 }
@@ -247,6 +256,10 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 			m.mode, m.anchor = mVisual, m.cur
 		}
 	case "esc":
+		if m.mode == mNormal && m.focus != "" {
+			m.focus = ""
+			m.rebuild()
+		}
 		m.mode = mNormal
 	case "enter":
 		m.enter()
@@ -272,6 +285,68 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		m.find(-1)
 	}
 	return nil
+}
+
+// mouse: wheel scrolls, hover highlights, click selects a row or file, drag selects lines,
+// and clicking the current row (or inside the selection) comments on it, like Enter.
+func (m *model) mouse(e tea.MouseMsg) {
+	m.mx, m.my = e.X, e.Y
+	if m.d.state == nil {
+		return
+	}
+	switch e.Button {
+	case tea.MouseButtonWheelUp:
+		m.move(-3)
+		return
+	case tea.MouseButtonWheelDown:
+		m.move(3)
+		return
+	}
+	if (m.mode != mNormal && m.mode != mVisual) || e.Y >= m.viewH() {
+		return
+	}
+	if e.X < m.listW() {
+		if files := m.files(); e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft && m.listOff+e.Y < len(files) {
+			p := files[m.listOff+e.Y].Path
+			if m.focus == p {
+				p = "" // clicking the focused file again shows all files
+			}
+			m.mode, m.focus = mNormal, p
+			m.rebuild()
+			for i, r := range m.rows {
+				if r.Kind == KFile && r.Path == files[m.listOff+e.Y].Path {
+					m.cur = i
+				}
+			}
+		}
+		return
+	}
+	i := m.top + e.Y
+	if i >= len(m.rows) {
+		return
+	}
+	switch {
+	case e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft:
+		m.msg = ""
+		lo, hi := m.cur, m.cur
+		if m.mode == mVisual {
+			lo, hi = min(m.anchor, m.cur), max(m.anchor, m.cur)
+		}
+		m.press, m.armed = i, i >= lo && i <= hi
+		if !m.armed {
+			m.mode, m.cur = mNormal, i
+		}
+	case e.Action == tea.MouseActionMotion && e.Button == tea.MouseButtonLeft:
+		if i != m.press && m.press < len(m.rows) && m.rows[m.press].Line.code() {
+			m.armed = false
+			m.mode, m.anchor, m.cur = mVisual, m.press, i
+		}
+	case e.Action == tea.MouseActionRelease:
+		if m.armed && i == m.press {
+			m.enter()
+		}
+		m.armed = false
+	}
 }
 
 func (m *model) move(d int) { m.cur = max(0, min(len(m.rows)-1, m.cur+d)) }
@@ -500,9 +575,15 @@ func (m *model) build() {
 		label = "Changes since last review"
 	}
 	rows := []Row{{Kind: KTop, Text: fmt.Sprintf("%s · %d files", label, len(files))}}
-	for _, t := range st.Threads {
-		if t.Path == "" || !shown[t.Path] {
-			rows = m.threadRows(rows, t)
+	if shown[m.focus] {
+		files = slices.DeleteFunc(slices.Clone(files), func(f File) bool { return f.Path != m.focus })
+		rows[0].Text += " · showing " + m.focus + " (esc: all)"
+	} else {
+		m.focus = ""
+		for _, t := range st.Threads {
+			if t.Path == "" || !shown[t.Path] {
+				rows = m.threadRows(rows, t)
+			}
 		}
 	}
 	for _, f := range files {
@@ -600,22 +681,26 @@ func (m *model) View() string {
 		}
 	}
 	lw, off := m.listW(), max(0, curIdx-vh+1)
+	m.listOff = off
 	lo, hi := m.cur, m.cur
 	if m.mode == mVisual {
 		lo, hi = min(m.anchor, m.cur), max(m.anchor, m.cur)
 	}
 	var b strings.Builder
 	for y := 0; y < vh; y++ {
-		left := ""
+		left, lst := "", lipgloss.NewStyle()
 		if i := off + y; i < len(files) {
 			left = " " + files[i].Path
 			if files[i].Path == curPath {
-				left = stCurFile.Render(ansi.Truncate(left, lw-1, "…"))
+				lst = stCurFile
+			}
+			if m.my == y && m.mx < lw {
+				lst = lst.Inherit(stHover)
 			}
 		}
-		b.WriteString(lipgloss.NewStyle().Width(lw-1).Render(ansi.Truncate(left, lw-1, "…")) + "│")
+		b.WriteString(lst.Width(lw-1).Render(ansi.Truncate(left, lw-1, "…")) + "│")
 		if i := m.top + y; i < len(m.rows) {
-			b.WriteString(m.renderRow(i, i >= lo && i <= hi))
+			b.WriteString(m.renderRow(i, i >= lo && i <= hi, m.my == y && m.mx >= lw))
 		}
 		b.WriteString("\n")
 	}
@@ -626,7 +711,7 @@ func (m *model) View() string {
 	return b.String()
 }
 
-func (m *model) renderRow(i int, selected bool) string {
+func (m *model) renderRow(i int, selected, hovered bool) string {
 	r := m.rows[i]
 	num := func(n int) string {
 		if n == 0 {
@@ -662,6 +747,8 @@ func (m *model) renderRow(i int, selected bool) string {
 		st = st.Reverse(true)
 	} else if selected && m.mode == mVisual {
 		st = st.Inherit(stSel)
+	} else if hovered {
+		st = st.Inherit(stHover)
 	}
 	return st.Width(w).Render(s)
 }

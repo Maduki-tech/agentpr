@@ -52,6 +52,6 @@ func run(base string, args []string) error {
 		flag.Usage()
 		os.Exit(2)
 	}
-	_, err = tea.NewProgram(newModel(repo, base), tea.WithAltScreen()).Run()
+	_, err = tea.NewProgram(newModel(repo, base), tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
 	return err
 }
