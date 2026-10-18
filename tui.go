@@ -26,9 +26,11 @@ const (
 	mSearch
 	mSubmit
 	mPick
+	mGit  // typing a branch name, commit message or PR text
+	mMenu // the git menu or one of its pickers
 )
 
-var modeNames = []string{"NORMAL", "VISUAL", "COMMENT", "SEARCH", "SUBMIT", "SEND TO"}
+var modeNames = []string{"NORMAL", "VISUAL", "COMMENT", "SEARCH", "SUBMIT", "SEND TO", "GIT", "GIT"}
 
 var (
 	stTop     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
@@ -62,6 +64,7 @@ type loaded struct {
 	state      *State
 	raw        []byte
 	agents     []Agent
+	git        GitState
 	err        error
 }
 
@@ -89,6 +92,14 @@ type model struct {
 	press    int    // row the left button went down on
 	armed    bool   // press landed on the current row/selection; release there comments
 	listOff  int    // first file shown in the file list
+	menu     *picker
+	busy     string  // git/gh step running, shown on the action button
+	cmd      tea.Cmd // started by a key or click handler, picked up by Update
+	pr       *PR
+	ghErr    string
+	btnX     int // action button's left edge on the status line
+	caretX   int // its ▾ (menu) part
+	ticks    int
 }
 
 func newModel(r *Repo, base string) *model {
@@ -100,31 +111,35 @@ func newModel(r *Repo, base string) *model {
 	return &model{repo: r, baseFlag: base, input: ta, mx: -1, my: -1}
 }
 
-func (m *model) Init() tea.Cmd { return m.load }
+func (m *model) Init() tea.Cmd { return m.load() }
 
-// load runs off the UI goroutine; it only reads immutable fields.
-func (m *model) load() tea.Msg {
-	var d loaded
-	if d.base, d.err = m.repo.Base(m.baseFlag); d.err != nil {
+// load runs off the UI goroutine, so it takes the repo up front: a commit on main swaps it for a new branch.
+func (m *model) load() tea.Cmd {
+	repo, baseFlag := m.repo, m.baseFlag
+	return func() tea.Msg {
+		var d loaded
+		if d.base, d.err = repo.Base(baseFlag); d.err != nil {
+			return d
+		}
+		if d.tree, d.err = repo.Snapshot(); d.err != nil {
+			return d
+		}
+		if d.full, d.err = repo.Diff(d.base, d.tree); d.err != nil {
+			return d
+		}
+		if d.state, d.raw, d.err = loadState(repo.StatePath()); d.err != nil {
+			return d
+		}
+		if d.state.LastReview != "" {
+			// The snapshot tree may have been garbage-collected; then fall back to the full view.
+			var err error
+			d.incr, err = repo.Diff(d.state.LastReview, d.tree)
+			d.incrOK = err == nil
+		}
+		d.git = repo.State(d.base, d.tree)
+		d.agents, _ = agents(repo.Root)
 		return d
 	}
-	if d.tree, d.err = m.repo.Snapshot(); d.err != nil {
-		return d
-	}
-	if d.full, d.err = m.repo.Diff(d.base, d.tree); d.err != nil {
-		return d
-	}
-	if d.state, d.raw, d.err = loadState(m.repo.StatePath()); d.err != nil {
-		return d
-	}
-	if d.state.LastReview != "" {
-		// The snapshot tree may have been garbage-collected; then fall back to the full view.
-		var err error
-		d.incr, err = m.repo.Diff(d.state.LastReview, d.tree)
-		d.incrOK = err == nil
-	}
-	d.agents, _ = agents(m.repo.Root)
-	return d
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -138,6 +153,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loaded:
 		// ponytail: polls git every 1.5s; switch to inotify if big repos make this slow.
 		next := tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+		// ponytail: gh asks GitHub for the PR every ~30s and after each git action; a webhook would be instant.
+		if m.ticks++; m.ticks%20 == 1 {
+			next = tea.Batch(next, m.fetchPR())
+		}
 		if msg.err != nil {
 			m.msg = msg.err.Error()
 			return m, next
@@ -146,17 +165,28 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.d, m.sig = msg, sig
 			m.rebuild()
 		}
-		m.d.agents = msg.agents
+		m.d.agents, m.d.git = msg.agents, msg.git
 		return m, next
 	case tickMsg:
-		return m, m.load
+		return m, m.load()
+	case gitDone:
+		return m, m.done(msg)
+	case prMsg:
+		m.gotPR(msg)
 	case tea.KeyMsg:
-		return m, m.key(msg)
+		cmd := m.key(msg)
+		cmd, m.cmd = tea.Batch(cmd, m.cmd), nil
+		return m, cmd
 	case tea.MouseMsg:
 		m.mouse(msg)
+		cmd := m.cmd
+		m.cmd = nil
+		return m, cmd
 	}
 	return m, nil
 }
+
+func (m *model) typing() bool { return m.mode == mInput || m.mode == mSearch || m.mode == mGit }
 
 func (m *model) key(k tea.KeyMsg) tea.Cmd {
 	s := k.String()
@@ -168,7 +198,7 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 	}
 	m.msg = ""
 	// Bubble Tea batches fast keystrokes ("jjj", key repeat) into one event; outside the input box, replay them one by one.
-	if k.Type == tea.KeyRunes && len(k.Runes) > 1 && m.mode != mInput && m.mode != mSearch {
+	if k.Type == tea.KeyRunes && len(k.Runes) > 1 && !m.typing() {
 		var cmds []tea.Cmd
 		for _, r := range k.Runes {
 			cmds = append(cmds, m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}))
@@ -176,7 +206,7 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	switch m.mode {
-	case mInput, mSearch:
+	case mInput, mSearch, mGit:
 		switch s {
 		case "esc":
 			m.mode = mNormal
@@ -202,6 +232,9 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		case "a":
 			m.approve()
 		}
+		return nil
+	case mMenu:
+		m.menuKey(s)
 		return nil
 	case mPick:
 		m.mode = mNormal
@@ -274,6 +307,10 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		}
 	case "S":
 		m.mode = mSubmit
+	case "c":
+		m.primary()
+	case "C":
+		m.gitMenu()
 	case "i":
 		m.showFull = !m.showFull
 		m.rebuild()
@@ -294,6 +331,10 @@ func (m *model) mouse(e tea.MouseMsg) {
 	if m.d.state == nil {
 		return
 	}
+	if m.mode == mMenu {
+		m.menuMouse(e)
+		return
+	}
 	switch e.Button {
 	case tea.MouseButtonWheelUp:
 		m.move(-3)
@@ -302,7 +343,19 @@ func (m *model) mouse(e tea.MouseMsg) {
 		m.move(3)
 		return
 	}
-	if (m.mode != mNormal && m.mode != mVisual) || e.Y >= m.viewH() {
+	if m.mode != mNormal && m.mode != mVisual {
+		return
+	}
+	if e.Y == m.h-1 && e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft {
+		m.msg = ""
+		if e.X >= m.caretX {
+			m.gitMenu()
+		} else if e.X >= m.btnX {
+			m.primary()
+		}
+		return
+	}
+	if e.Y >= m.viewH() {
 		return
 	}
 	if e.X < m.listW() {
@@ -652,7 +705,7 @@ func (m *model) diffW() int { return m.w - m.listW() }
 
 func (m *model) viewH() int {
 	h := m.h - 1
-	if m.mode == mInput || m.mode == mSearch {
+	if m.typing() {
 		h -= m.input.Height()
 	}
 	return max(1, h)
@@ -686,8 +739,9 @@ func (m *model) View() string {
 	if m.mode == mVisual {
 		lo, hi = min(m.anchor, m.cur), max(m.anchor, m.cur)
 	}
-	var b strings.Builder
-	for y := 0; y < vh; y++ {
+	lines := make([]string, vh)
+	for y := range lines {
+		var b strings.Builder
 		left, lst := "", lipgloss.NewStyle()
 		if i := off + y; i < len(files) {
 			left = " " + files[i].Path
@@ -702,13 +756,15 @@ func (m *model) View() string {
 		if i := m.top + y; i < len(m.rows) {
 			b.WriteString(m.renderRow(i, i >= lo && i <= hi, m.my == y && m.mx >= lw))
 		}
-		b.WriteString("\n")
+		lines[y] = b.String()
 	}
-	if m.mode == mInput || m.mode == mSearch {
-		b.WriteString(m.input.View() + "\n")
+	if m.mode == mMenu {
+		m.overlayMenu(lines)
 	}
-	b.WriteString(m.status())
-	return b.String()
+	if m.typing() {
+		lines = append(lines, m.input.View())
+	}
+	return strings.Join(append(lines, m.status()), "\n")
 }
 
 func (m *model) renderRow(i int, selected, hovered bool) string {
@@ -781,13 +837,19 @@ func (m *model) status() string {
 				ps = append(ps, fmt.Sprintf("%d) %s [%s]", i+1, a.Title, a.Status))
 			}
 			hint = strings.Join(ps, "  ")
+		case mGit:
+			hint = m.input.Placeholder + " · enter ok · ctrl+j newline · esc cancel"
+		case mMenu:
+			hint = "j/k move · enter pick · esc close"
 		case mInput, mSearch:
 			hint = "enter save · ctrl+j newline · esc cancel"
 		default:
-			hint = "enter comment · v select · R resolve · S submit · i full/new · / search · q quit"
+			hint = "enter comment · v select · R resolve · S submit · c git action · C git menu · i full/new · / search · q quit"
 		}
 	}
-	return stStatus.Width(m.w).Render(ansi.Truncate(left+hint, m.w, "…"))
+	btn := m.button()
+	w := m.w - lipgloss.Width(btn)
+	return stStatus.Width(w).Render(ansi.Truncate(left+hint, w, "…")) + btn
 }
 
 func abs(x int) int {

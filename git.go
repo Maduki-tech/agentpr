@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -85,6 +88,139 @@ func (r *Repo) Snapshot() (string, error) {
 		return "", err
 	}
 	return git(r.Root, env, "write-tree")
+}
+
+// GitState is what the action button needs to know about the branch; PR comes from gh separately.
+type GitState struct {
+	Branch        string
+	Default       bool // on main/master
+	Dirty         bool // the working tree differs from HEAD
+	Remote        bool
+	Ahead, Behind int // commits on no remote yet / upstream commits missing here
+	Delta         int // commits since the Base
+	PR            *PR
+}
+
+func (r *Repo) State(base, tree string) GitState {
+	s := GitState{Branch: r.Branch, Default: r.Branch == "main" || r.Branch == "master"}
+	head, err := git(r.Root, nil, "rev-parse", "-q", "--verify", "HEAD^{tree}")
+	if err != nil {
+		head = emptyTree
+	}
+	s.Dirty = tree != head
+	remotes, _ := git(r.Root, nil, "remote")
+	s.Remote = remotes != ""
+	count := func(args ...string) int {
+		out, _ := git(r.Root, nil, append([]string{"rev-list", "--count"}, args...)...)
+		n, _ := strconv.Atoi(out)
+		return n
+	}
+	s.Ahead = count("HEAD", "--not", "--remotes")
+	s.Behind = count("HEAD..@{u}")
+	s.Delta = count(base + "..HEAD")
+	return s
+}
+
+// Branches lists local and remote branches by name, without the remote prefix.
+func (r *Repo) Branches() ([]string, error) {
+	out, err := git(r.Root, nil, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+	return parseBranches(out), err
+}
+
+func parseBranches(out string) []string {
+	var bs []string
+	for _, ref := range strings.Split(out, "\n") {
+		b, ok := strings.CutPrefix(ref, "refs/heads/")
+		if !ok {
+			_, b, _ = strings.Cut(strings.TrimPrefix(ref, "refs/remotes/"), "/")
+		}
+		if b != "" && b != "HEAD" && !slices.Contains(bs, b) {
+			bs = append(bs, b)
+		}
+	}
+	return bs
+}
+
+// Commit stages everything the Changeset shows (tracked + untracked) and commits it,
+// switching to a new branch first when branch is set.
+func (r *Repo) Commit(branch, msg string) error {
+	if branch != "" {
+		if _, err := git(r.Root, nil, "switch", "-c", branch); err != nil {
+			return err
+		}
+	}
+	if _, err := git(r.Root, nil, "add", "-A"); err != nil {
+		return err
+	}
+	_, err := git(r.Root, nil, "commit", "-q", "-m", msg)
+	return err
+}
+
+// Push publishes the branch; a credential prompt fails instead of hanging the TUI.
+func (r *Repo) Push() error {
+	_, err := git(r.Root, []string{"GIT_TERMINAL_PROMPT=0"}, "push", "-q", "-u", "origin", "HEAD")
+	return err
+}
+
+// gh runs the GitHub CLI, turning "not installed" and "not logged in" into messages a person can act on.
+func gh(dir string, args ...string) (string, error) {
+	cmd := exec.Command("gh", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1")
+	out, err := cmd.Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", errors.New("gh not found: PRs need the GitHub CLI (cli.github.com)")
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		msg := strings.TrimSpace(string(ee.Stderr))
+		if strings.Contains(msg, "gh auth login") {
+			msg = "not logged in to GitHub, run: gh auth login"
+		}
+		return "", fmt.Errorf("gh %s: %s", strings.Join(args[:min(2, len(args))], " "), msg)
+	}
+	return strings.TrimSpace(string(out)), err
+}
+
+type PR struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	State  string `json:"state"` // OPEN, CLOSED or MERGED
+	Base   string `json:"baseRefName"`
+}
+
+// PR returns the branch's latest pull request, or nil if it has none.
+func (r *Repo) PR() (*PR, error) {
+	out, err := gh(r.Root, "pr", "view", r.Branch, "--json", "number,url,state,baseRefName")
+	if err != nil {
+		if strings.Contains(err.Error(), "no pull requests found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	pr := &PR{}
+	return pr, json.Unmarshal([]byte(out), pr)
+}
+
+// CreatePR pushes the branch and opens a pull request into base; it returns the PR's URL.
+func (r *Repo) CreatePR(base, title, body string) (string, error) {
+	if err := r.Push(); err != nil {
+		return "", err
+	}
+	out, err := gh(r.Root, "pr", "create", "--base", base, "--head", r.Branch, "--title", title, "--body", body)
+	return out[strings.LastIndex(out, "\n")+1:], err
+}
+
+// MergePR merges pr with method (merge, squash or rebase), retargeting it to base first if that changed.
+func (r *Repo) MergePR(pr PR, base, method string) error {
+	n := strconv.Itoa(pr.Number)
+	if base != pr.Base {
+		if _, err := gh(r.Root, "pr", "edit", n, "--base", base); err != nil {
+			return err
+		}
+	}
+	_, err := gh(r.Root, "pr", "merge", n, "--"+method)
+	return err
 }
 
 func (r *Repo) Diff(from, to string) ([]File, error) {
