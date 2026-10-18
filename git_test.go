@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const sample = `diff --git a/a.go b/a.go
 index 1..2 100644
@@ -78,4 +81,46 @@ func TestBase(t *testing.T) {
 	run("update-ref", "refs/heads/main", init)
 	base("", "origin/main")
 	base("dev", "dev")
+}
+
+func TestFileStatus(t *testing.T) {
+	fs := parseDiff(`diff --git a/n.go b/n.go
+new file mode 100644
+index 0000000..1
+--- /dev/null
++++ b/n.go
+@@ -0,0 +1,2 @@
++a
++b
+diff --git a/d.go b/d.go
+deleted file mode 100644
+index 1..0000000
+--- a/d.go
++++ /dev/null
+@@ -1 +0,0 @@
+-a
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/img.png b/img.png
+new file mode 100644
+index 0000000..1
+Binary files /dev/null and b/img.png differ
+` + sample[strings.Index(sample, "diff"):])
+	want := []struct {
+		path, status string
+		add, del     int
+	}{{"n.go", "new", 2, 0}, {"d.go", "deleted", 0, 1}, {"run.sh", "mode 100644 → 100755", 0, 0}, {"img.png", "new · binary", 0, 0}, {"a.go", "modified", 2, 1}}
+	if len(fs) != len(want) {
+		t.Fatalf("files: %+v", fs)
+	}
+	for i, w := range want {
+		f := fs[i]
+		if add, del := f.stats(); f.Path != w.path || f.Status != w.status || add != w.add || del != w.del {
+			t.Errorf("file %d: %s %q +%d -%d, want %+v", i, f.Path, f.Status, add, del, w)
+		}
+		if len(f.Lines) > 0 && f.Lines[0].Kind != KHunk {
+			t.Errorf("%s: meta lines must fold into the header, got %+v", f.Path, f.Lines[0])
+		}
+	}
 }

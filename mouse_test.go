@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestMouse(t *testing.T) {
@@ -53,7 +55,32 @@ func TestFocusFile(t *testing.T) {
 		t.Fatalf("focus b: focus=%q rows=%d cur=%d", m.focus, len(m.rows), m.cur)
 	}
 	m.mouse(tea.MouseMsg{X: 1, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	if m.focus != "" || len(m.rows) != 5 {
+	if m.focus != "" || len(m.rows) != 6 || m.rows[3].Kind != KGap {
 		t.Fatalf("unfocus: focus=%q rows=%d", m.focus, len(m.rows))
+	}
+}
+
+// The spacer between two files is skipped by keys, clicks and drags, and shows in the header.
+func TestGap(t *testing.T) {
+	m := newModel(nil, "")
+	m.w, m.h, m.d.state, m.d.base = 100, 20, &State{}, "abc"
+	m.d.files = []File{{Path: "a", Status: "modified", Lines: []Line{{Kind: KAdd, New: 1, Text: "+x"}}}, {Path: "d/b", Status: "new", Lines: []Line{{Kind: KAdd, New: 1, Text: "+y"}}}}
+	m.build() // top, a, +x, gap, d/b, +y
+	m.cur = 2
+	if m.move(1); m.cur != 4 {
+		t.Fatalf("down skips the gap: cur=%d", m.cur)
+	}
+	if m.move(-1); m.cur != 2 {
+		t.Fatalf("up skips the gap: cur=%d", m.cur)
+	}
+	for _, a := range []tea.MouseAction{tea.MouseActionPress, tea.MouseActionMotion, tea.MouseActionRelease} {
+		m.mouse(tea.MouseMsg{X: 50, Y: 4, Action: a, Button: tea.MouseButtonLeft})
+	}
+	if m.cur != 2 || m.mode != mNormal {
+		t.Fatalf("clicking the gap does nothing: cur=%d mode=%d", m.cur, m.mode)
+	}
+	m.cur = 4
+	if h := ansi.Strip(m.renderRow(4, false, false)); !strings.Contains(h, "▌ d/b") || !strings.HasSuffix(strings.TrimRight(h, " "), "new  +1 −0") {
+		t.Fatalf("header: %q", h)
 	}
 }
