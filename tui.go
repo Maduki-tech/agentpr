@@ -27,11 +27,12 @@ const (
 	mSearch
 	mSubmit
 	mPick
-	mGit  // typing a branch name, commit message or PR text
-	mMenu // the git menu or one of its pickers
+	mGit     // typing a branch name, commit message or PR text
+	mMenu    // the git menu or one of its pickers
+	mConfirm // a y/n question
 )
 
-var modeNames = []string{"NORMAL", "VISUAL", "COMMENT", "SEARCH", "SUBMIT", "SEND TO", "GIT", "GIT"}
+var modeNames = []string{"NORMAL", "VISUAL", "COMMENT", "SEARCH", "SUBMIT", "SEND TO", "GIT", "GIT", "CONFIRM"}
 
 // Set from the active theme by setTheme.
 var stTop, stFile, stHunk, stAdd, stDel, stCtx, stThread, stDone, stSel, stHover, stStatus, stCurFile lipgloss.Style
@@ -93,6 +94,8 @@ type model struct {
 	help     bool   // the key list is shown
 	gen      int    // counts input boxes, so a late draft lands only in the box it was made for
 	redraft  func() // asks Claude again for the open input's text (ctrl+r)
+	question string // the y/n question in mConfirm
+	answer   func(yes bool)
 	ticks    int
 	hl       map[string]*highlight
 }
@@ -166,6 +169,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.load()
 	case gitDone:
 		return m, m.done(msg)
+	case merged:
+		m.afterMerge(msg)
+		cmd := m.cmd
+		m.cmd = nil
+		return m, cmd
 	case prMsg:
 		m.gotPR(msg)
 	case drafted:
@@ -236,6 +244,10 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case mMenu:
 		m.menuKey(s)
+		return nil
+	case mConfirm:
+		m.mode = mNormal
+		m.answer(s == "y")
 		return nil
 	case mPick:
 		m.mode = mNormal
@@ -846,6 +858,9 @@ func (m *model) status() string {
 	}
 	left := fmt.Sprintf(" %s │ %s vs %s │ %d open · %d pending │ %s │ ", modeNames[m.mode], m.repo.Branch, m.d.baseRef, open, pending, author)
 	hint := m.msg
+	if m.mode == mConfirm {
+		hint = m.question
+	}
 	if hint == "" {
 		switch m.mode {
 		case mSubmit:

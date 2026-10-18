@@ -255,11 +255,63 @@ func (m *model) merge() {
 			items[i] = item{label: s, on: true}
 		}
 		m.open("Merge method", items, 1, func(i int) {
-			m.exec("merging…", func() (string, error) {
-				return fmt.Sprintf("merged PR #%d into %s (%s)", pr.Number, base, methods[i]), r.MergePR(pr, base, methods[i])
-			})
+			m.busy = "merging…"
+			m.cmd = func() tea.Msg {
+				msg := fmt.Sprintf("merged PR #%d into %s (%s)", pr.Number, base, methods[i])
+				if err := r.MergePR(pr, base, methods[i]); err != nil || !r.Linked() {
+					return gitDone{msg, err}
+				}
+				lost, err := r.Unsaved()
+				return merged{pr.Number, msg, lost, err}
+			}
 		})
 	})
+}
+
+// merged is a merge from a linked worktree, which is then removed.
+type merged struct {
+	pr   int
+	msg  string
+	lost string // what removing the worktree would lose, "" if nothing
+	err  error
+}
+
+// afterMerge removes the worktree, asking first when that would lose work.
+func (m *model) afterMerge(d merged) {
+	m.busy = ""
+	switch {
+	case d.err != nil:
+		m.msg = d.msg + " · worktree kept: " + d.err.Error()
+	case d.lost != "":
+		m.msg = ""
+		m.confirm(fmt.Sprintf("%s · removing the worktree loses %s: remove anyway? (y/n)", d.msg, d.lost), func(yes bool) {
+			if yes {
+				m.removeWorktree(d.pr, true)
+			} else {
+				m.msg = d.msg + " · worktree kept"
+			}
+		})
+	default:
+		m.removeWorktree(d.pr, false)
+		return
+	}
+	m.cmd = m.fetchPR()
+}
+
+// removeWorktree deletes the branch and the worktree, then quits; on failure agentpr stays open with the error.
+func (m *model) removeWorktree(pr int, force bool) {
+	r := *m.repo
+	m.busy, m.msg = "removing worktree…", fmt.Sprintf("merged #%d · removing worktree…", pr)
+	m.cmd = func() tea.Msg {
+		if err := r.Remove(herdrWorkspace(r.Root), force); err != nil {
+			return gitDone{err: fmt.Errorf("merged #%d, but removing the worktree failed: %w", pr, err)}
+		}
+		return tea.QuitMsg{}
+	}
+}
+
+func (m *model) confirm(q string, answer func(yes bool)) {
+	m.mode, m.question, m.answer = mConfirm, q, answer
 }
 
 // pickBranch lists every branch but head; def "" preselects the Base's branch.
