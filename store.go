@@ -55,10 +55,9 @@ func (t *Thread) Pending() bool {
 }
 
 type State struct {
-	NextID     int       `json:"next_id"`
-	LastReview string    `json:"last_review,omitempty"` // tree snapshot at last submitted Review
-	Threads    []*Thread `json:"threads"`
-	Archived   []*Thread `json:"archived,omitempty"`
+	NextID   int       `json:"next_id"`
+	Threads  []*Thread `json:"threads"`
+	Archived []*Thread `json:"archived,omitempty"`
 }
 
 func (s *State) Thread(id string) *Thread {

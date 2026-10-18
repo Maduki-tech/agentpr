@@ -41,3 +41,41 @@ func TestParseAndAnchor(t *testing.T) {
 		t.Fatalf("expected outdated, got %d", i)
 	}
 }
+
+func TestBase(t *testing.T) {
+	r := testRepo(t)
+	run := func(args ...string) string {
+		out, err := git(r.Root, nil, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	base := func(ref, want string) {
+		t.Helper()
+		if _, got, err := r.Base(ref); err != nil || got != want {
+			t.Fatalf("Base(%q) on %s: %q %v, want %q", ref, r.Branch, got, err, want)
+		}
+	}
+	init := run("rev-parse", "HEAD")
+	run("commit", "-q", "--allow-empty", "-m", "unpushed")
+
+	// main without an upstream: HEAD; with one: the upstream, so the unpushed commit shows.
+	base("", "HEAD")
+	run("remote", "add", "origin", r.Root)
+	run("update-ref", "refs/remotes/origin/main", init)
+	run("branch", "-q", "-u", "origin/main")
+	base("", "origin/main")
+	if c, _, _ := r.Base(""); c != init {
+		t.Fatalf("Base is the upstream's commit: %s", c)
+	}
+
+	// A feature branch: main, unless origin/main is ahead of it.
+	run("switch", "-q", "-c", "f")
+	r.Branch = "f"
+	run("update-ref", "refs/remotes/origin/main", "main")
+	base("", "main")
+	run("update-ref", "refs/heads/main", init)
+	base("", "origin/main")
+	base("dev", "dev")
+}

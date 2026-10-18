@@ -47,23 +47,54 @@ func openRepo(dir string) (*Repo, error) {
 	return &Repo{root, gitDir, branch}, nil
 }
 
-// Base: --base override, else merge-base with main/master on a feature branch, else HEAD.
-func (r *Repo) Base(override string) (string, error) {
-	if override != "" {
-		return git(r.Root, nil, "rev-parse", "--verify", override+"^{commit}")
+// Base returns the Base commit and the ref it came from: the merge-base of HEAD with ref
+// (--base or the picker), or with the default ref when ref is "".
+func (r *Repo) Base(ref string) (string, string, error) {
+	if _, err := git(r.Root, nil, "rev-parse", "--verify", "-q", "HEAD"); err != nil {
+		if ref == "" {
+			return emptyTree, "empty tree", nil // no commits yet
+		}
+		c, err := git(r.Root, nil, "rev-parse", "--verify", ref+"^{commit}")
+		return c, ref, err
 	}
-	head, err := git(r.Root, nil, "rev-parse", "--verify", "-q", "HEAD")
+	if ref == "" {
+		ref = r.defaultBase()
+	}
+	if _, err := git(r.Root, nil, "rev-parse", "--verify", ref+"^{commit}"); err != nil {
+		return "", "", err
+	}
+	mb, err := git(r.Root, nil, "merge-base", "HEAD", ref)
 	if err != nil {
-		return emptyTree, nil // no commits yet
+		return "", "", fmt.Errorf("%s shares no history with %s", ref, r.Branch)
 	}
-	if r.Branch != "main" && r.Branch != "master" {
-		for _, m := range []string{"main", "master", "origin/main", "origin/master"} {
-			if mb, err := git(r.Root, nil, "merge-base", "HEAD", m); err == nil {
-				return mb, nil
+	return mb, ref, nil
+}
+
+// defaultBase: on main/master its upstream, so unpushed commits show; on a feature branch
+// main/master, or origin's when that is ahead; else HEAD.
+func (r *Repo) defaultBase() string {
+	if r.Branch == "main" || r.Branch == "master" {
+		if u, err := git(r.Root, nil, "rev-parse", "--abbrev-ref", "--verify", "-q", "@{u}"); err == nil {
+			return u
+		}
+		return "HEAD"
+	}
+	for _, b := range []string{"main", "master"} {
+		local, lerr := git(r.Root, nil, "rev-parse", "--verify", "-q", b)
+		remote, rerr := git(r.Root, nil, "rev-parse", "--verify", "-q", "origin/"+b)
+		switch {
+		case lerr == nil && rerr == nil && local != remote:
+			if _, err := git(r.Root, nil, "merge-base", "--is-ancestor", b, "origin/"+b); err == nil {
+				return "origin/" + b
 			}
+			return b
+		case lerr == nil:
+			return b
+		case rerr == nil:
+			return "origin/" + b
 		}
 	}
-	return head, nil
+	return "HEAD"
 }
 
 // Snapshot writes the working tree (tracked + untracked, minus ignored) as a git tree
@@ -125,6 +156,18 @@ func (r *Repo) State(base, tree string) GitState {
 func (r *Repo) Branches() ([]string, error) {
 	out, err := git(r.Root, nil, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
 	return parseBranches(out), err
+}
+
+// Refs lists local and remote branches as git names them (main, origin/main), but not head.
+func (r *Repo) Refs(head string) ([]string, error) {
+	out, err := git(r.Root, nil, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+	var refs []string
+	for _, ref := range strings.Split(out, "\n") {
+		if ref = strings.TrimPrefix(strings.TrimPrefix(ref, "refs/heads/"), "refs/remotes/"); ref != "" && ref != head && !strings.HasSuffix(ref, "/HEAD") {
+			refs = append(refs, ref)
+		}
+	}
+	return refs, err
 }
 
 func parseBranches(out string) []string {

@@ -47,14 +47,17 @@ type Row struct {
 }
 
 type loaded struct {
-	base, tree string
-	full, incr []File
-	incrOK     bool
-	state      *State
-	raw        []byte
-	agents     []Agent
-	git        GitState
-	err        error
+	baseFlag string // the ref asked for, so a load started before a Base switch is dropped
+	once     bool   // a reload after a Base switch, outside the polling loop
+	base     string
+	baseRef  string // what the Base came from: main, origin/main, HEAD…
+	tree     string
+	files    []File
+	state    *State
+	raw      []byte
+	agents   []Agent
+	git      GitState
+	err      error
 }
 
 type tickMsg struct{}
@@ -64,7 +67,6 @@ type model struct {
 	baseFlag string
 	d        loaded
 	sig      string
-	showFull bool
 	focus    string // only this file is shown in the diff pane
 	rows     []Row
 	cur, top int
@@ -86,8 +88,10 @@ type model struct {
 	cmd      tea.Cmd // started by a key or click handler, picked up by Update
 	pr       *PR
 	ghErr    string
-	btnX     int // action button's left edge on the status line
-	caretX   int // its ▾ (menu) part
+	bar      []tool // the toolbar's buttons as last drawn, for the mouse
+	help     bool   // the key list is shown
+	gen      int    // counts input boxes, so a late draft lands only in the box it was made for
+	redraft  func() // asks Claude again for the open input's text (ctrl+r)
 	ticks    int
 	hl       map[string]*highlight
 }
@@ -107,24 +111,18 @@ func (m *model) Init() tea.Cmd { return m.load() }
 func (m *model) load() tea.Cmd {
 	repo, baseFlag := m.repo, m.baseFlag
 	return func() tea.Msg {
-		var d loaded
-		if d.base, d.err = repo.Base(baseFlag); d.err != nil {
+		d := loaded{baseFlag: baseFlag}
+		if d.base, d.baseRef, d.err = repo.Base(baseFlag); d.err != nil {
 			return d
 		}
 		if d.tree, d.err = repo.Snapshot(); d.err != nil {
 			return d
 		}
-		if d.full, d.err = repo.Diff(d.base, d.tree); d.err != nil {
+		if d.files, d.err = repo.Diff(d.base, d.tree); d.err != nil {
 			return d
 		}
 		if d.state, d.raw, d.err = loadState(repo.StatePath()); d.err != nil {
 			return d
-		}
-		if d.state.LastReview != "" {
-			// The snapshot tree may have been garbage-collected; then fall back to the full view.
-			var err error
-			d.incr, err = repo.Diff(d.state.LastReview, d.tree)
-			d.incrOK = err == nil
 		}
 		d.git = repo.State(d.base, d.tree)
 		d.agents, _ = agents(repo.Root)
@@ -141,17 +139,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuild()
 		}
 	case loaded:
-		// ponytail: polls git every 1.5s; switch to inotify if big repos make this slow.
-		next := tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
-		// ponytail: gh asks GitHub for the PR every ~30s and after each git action; a webhook would be instant.
-		if m.ticks++; m.ticks%20 == 1 {
-			next = tea.Batch(next, m.fetchPR())
+		var next tea.Cmd
+		if !msg.once {
+			// ponytail: polls git every 1.5s; switch to inotify if big repos make this slow.
+			next = tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+			// ponytail: gh asks GitHub for the PR every ~30s and after each git action; a webhook would be instant.
+			if m.ticks++; m.ticks%20 == 1 {
+				next = tea.Batch(next, m.fetchPR())
+			}
+		}
+		if msg.baseFlag != m.baseFlag {
+			return m, next
 		}
 		if msg.err != nil {
 			m.msg = msg.err.Error()
 			return m, next
 		}
-		if sig := msg.base + msg.tree + string(msg.raw); sig != m.sig {
+		if sig := msg.baseRef + msg.base + msg.tree + string(msg.raw); sig != m.sig {
 			m.d, m.sig = msg, sig
 			m.rebuild()
 		}
@@ -163,6 +167,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.done(msg)
 	case prMsg:
 		m.gotPR(msg)
+	case drafted:
+		m.gotDraft(msg)
 	case tea.KeyMsg:
 		cmd := m.key(msg)
 		cmd, m.cmd = tea.Batch(cmd, m.cmd), nil
@@ -201,6 +207,10 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		case "esc":
 			m.mode = mNormal
 			m.input.Blur()
+		case "ctrl+r":
+			if m.redraft != nil {
+				m.redraft()
+			}
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			m.mode = mNormal
@@ -279,11 +289,11 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 			m.mode, m.anchor = mVisual, m.cur
 		}
 	case "esc":
-		if m.mode == mNormal && m.focus != "" {
+		if m.mode == mNormal && m.focus != "" && !m.help {
 			m.focus = ""
 			m.rebuild()
 		}
-		m.mode = mNormal
+		m.mode, m.help = mNormal, false
 	case "enter":
 		m.enter()
 	case "R":
@@ -303,9 +313,10 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		m.gitMenu()
 	case "T":
 		m.msg = "theme: " + nextTheme()
-	case "i":
-		m.showFull = !m.showFull
-		m.rebuild()
+	case "?":
+		m.help = !m.help
+	case "b":
+		m.pickBase()
 	case "/":
 		m.ask(mSearch, "search", func(q string) { m.search = q; m.find(1) })
 	case "n":
@@ -338,35 +349,33 @@ func (m *model) mouse(e tea.MouseMsg) {
 	if m.mode != mNormal && m.mode != mVisual {
 		return
 	}
-	if e.Y == m.h-1 && e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft {
-		m.msg = ""
-		if e.X >= m.caretX {
-			m.gitMenu()
-		} else if e.X >= m.btnX {
-			m.primary()
+	if e.Y == 0 {
+		if e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft {
+			m.toolClick(e.X)
 		}
 		return
 	}
-	if e.Y >= m.viewH() {
+	y := e.Y - 1 // row in the panes, below the toolbar
+	if y >= m.viewH() {
 		return
 	}
 	if e.X < m.listW() {
-		if files := m.files(); e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft && m.listOff+e.Y < len(files) {
-			p := files[m.listOff+e.Y].Path
+		if files := m.files(); e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft && m.listOff+y < len(files) {
+			p := files[m.listOff+y].Path
 			if m.focus == p {
 				p = "" // clicking the focused file again shows all files
 			}
 			m.mode, m.focus = mNormal, p
 			m.rebuild()
 			for i, r := range m.rows {
-				if r.Kind == KFile && r.Path == files[m.listOff+e.Y].Path {
+				if r.Kind == KFile && r.Path == files[m.listOff+y].Path {
 					m.cur = i
 				}
 			}
 		}
 		return
 	}
-	i := m.top + e.Y
+	i := m.top + y
 	if i >= len(m.rows) {
 		return
 	}
@@ -397,12 +406,19 @@ func (m *model) mouse(e tea.MouseMsg) {
 func (m *model) move(d int) { m.cur = max(0, min(len(m.rows)-1, m.cur+d)) }
 
 func (m *model) jump(dir int, pred func(Row) bool) {
+	if i := m.next(dir, pred); i >= 0 {
+		m.cur = i
+	}
+}
+
+// next is the nearest row after (dir 1) or before (dir -1) the cursor that matches pred, or -1.
+func (m *model) next(dir int, pred func(Row) bool) int {
 	for i := m.cur + dir; i >= 0 && i < len(m.rows); i += dir {
 		if pred(m.rows[i]) {
-			m.cur = i
-			return
+			return i
 		}
 	}
+	return -1
 }
 
 func (m *model) find(dir int) {
@@ -422,7 +438,8 @@ func (m *model) find(dir int) {
 }
 
 func (m *model) ask(md mode, placeholder string, f func(string)) {
-	m.mode, m.onInput = md, f
+	m.mode, m.onInput, m.redraft = md, f, nil
+	m.gen++
 	m.input.Reset()
 	m.input.Placeholder = placeholder
 	// Themed here, not in setTheme: the theme can't change while the box is open.
@@ -539,14 +556,12 @@ func (m *model) deliver(a Agent) {
 			how = err.Error() + "; review written to " + p
 		}
 	}
-	tree := m.d.tree
 	if m.mutate(func(s *State) error {
 		for _, t := range s.Threads {
 			for i := range t.Comments {
 				t.Comments[i].Pending = false
 			}
 		}
-		s.LastReview = tree
 		return nil
 	}) {
 		m.msg = how
@@ -554,22 +569,16 @@ func (m *model) deliver(a Agent) {
 }
 
 func (m *model) approve() {
-	tree := m.d.tree
 	if m.mutate(func(s *State) error {
 		s.Archived = append(s.Archived, s.Threads...)
-		s.Threads, s.LastReview = nil, tree
+		s.Threads = nil
 		return nil
 	}) {
 		m.msg = "approved; threads archived"
 	}
 }
 
-func (m *model) files() []File {
-	if !m.showFull && m.d.incrOK {
-		return m.d.incr
-	}
-	return m.d.full
-}
+func (m *model) files() []File { return m.d.files }
 
 func rowKey(r Row) string {
 	switch {
@@ -605,23 +614,16 @@ func (m *model) rebuild() {
 
 func (m *model) build() {
 	st := m.d.state
-	full := map[string][]Line{}
-	for _, f := range m.d.full {
-		full[f.Path] = f.Lines
+	files := m.files()
+	shown, lines := map[string]bool{}, map[string][]Line{}
+	for _, f := range files {
+		shown[f.Path], lines[f.Path] = true, f.Lines
 	}
 	for _, t := range st.Threads {
-		t.Outdated = len(t.Lines) > 0 && findAnchor(full[t.Path], t) < 0
-	}
-	files := m.files()
-	shown := map[string]bool{}
-	for _, f := range files {
-		shown[f.Path] = true
+		t.Outdated = len(t.Lines) > 0 && findAnchor(lines[t.Path], t) < 0
 	}
 
-	label := "Changeset vs " + m.d.base[:min(8, len(m.d.base))]
-	if !m.showFull && m.d.incrOK {
-		label = "Changes since last review"
-	}
+	label := fmt.Sprintf("Changeset vs %s (%s)", m.d.baseRef, m.d.base[:min(8, len(m.d.base))])
 	rows := []Row{{Kind: KTop, Text: fmt.Sprintf("%s · %d files", label, len(files))}}
 	if shown[m.focus] {
 		files = slices.DeleteFunc(slices.Clone(files), func(f File) bool { return f.Path != m.focus })
@@ -702,7 +704,7 @@ func (m *model) listW() int { return min(32, m.w/4) }
 func (m *model) diffW() int { return m.w - m.listW() }
 
 func (m *model) viewH() int {
-	h := m.h - 1
+	h := m.h - 2 // toolbar and status line
 	if m.typing() {
 		h -= m.input.Height()
 	}
@@ -746,25 +748,27 @@ func (m *model) View() string {
 			if files[i].Path == curPath {
 				lst = stCurFile
 			}
-			if m.my == y && m.mx < lw {
+			if m.my == y+1 && m.mx < lw {
 				lst = lst.Background(stHover.GetBackground())
 			}
 		}
 		b.WriteString(lst.Width(lw-1).Render(ansi.Truncate(left, lw-1, "…")) + stDone.Render("│"))
 		if i := m.top + y; i < len(m.rows) {
-			b.WriteString(m.renderRow(i, i >= lo && i <= hi, m.my == y && m.mx >= lw))
+			b.WriteString(m.renderRow(i, i >= lo && i <= hi, m.my == y+1 && m.mx >= lw))
 		} else {
 			b.WriteString(stCtx.Width(m.diffW()).Render(""))
 		}
 		lines[y] = b.String()
 	}
 	if m.mode == mMenu {
-		m.overlayMenu(lines)
+		overlay(lines, m.menuView())
+	} else if m.help {
+		overlay(lines, m.helpView())
 	}
 	if m.typing() {
 		lines = append(lines, stCtx.Width(m.w).Render(m.input.View()))
 	}
-	return strings.Join(append(lines, m.status()), "\n")
+	return strings.Join(append(append([]string{m.toolbar()}, lines...), m.status()), "\n")
 }
 
 func (m *model) renderRow(i int, selected, hovered bool) string {
@@ -839,7 +843,7 @@ func (m *model) status() string {
 	} else if n > 1 {
 		author = fmt.Sprintf("%d Claude panes", n)
 	}
-	left := fmt.Sprintf(" %s │ %s │ %d open · %d pending │ %s │ ", modeNames[m.mode], m.repo.Branch, open, pending, author)
+	left := fmt.Sprintf(" %s │ %s vs %s │ %d open · %d pending │ %s │ ", modeNames[m.mode], m.repo.Branch, m.d.baseRef, open, pending, author)
 	hint := m.msg
 	if hint == "" {
 		switch m.mode {
@@ -853,17 +857,18 @@ func (m *model) status() string {
 			hint = strings.Join(ps, "  ")
 		case mGit:
 			hint = m.input.Placeholder + " · enter ok · ctrl+j newline · esc cancel"
+			if m.redraft != nil {
+				hint += " · ctrl+r ask Claude again"
+			}
 		case mMenu:
 			hint = "j/k move · enter pick · esc close"
 		case mInput, mSearch:
 			hint = "enter save · ctrl+j newline · esc cancel"
 		default:
-			hint = "enter comment · v select · R resolve · S submit · c git action · C git menu · i full/new · T theme · / search · q quit"
+			hint = "enter comment · v select · ? all keys"
 		}
 	}
-	btn := m.button()
-	w := m.w - lipgloss.Width(btn)
-	return stStatus.Width(w).Render(ansi.Truncate(left+hint, w, "…")) + btn
+	return stStatus.Width(m.w).Render(ansi.Truncate(left+hint, m.w, "…"))
 }
 
 func abs(x int) int {

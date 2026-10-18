@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,7 +46,7 @@ func TestParseBranches(t *testing.T) {
 
 func TestMenu(t *testing.T) {
 	m := newModel(&Repo{Branch: "f"}, "")
-	m.w, m.h, m.d.state = 100, 20, &State{}
+	m.w, m.h, m.d.state, m.rows = 100, 20, &State{}, []Row{{Kind: KTop}}
 	m.d.git = GitState{Branch: "f", Remote: true, Ahead: 1, Delta: 1}
 	key := func(s string) { m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}) }
 
@@ -72,14 +73,12 @@ func TestMenu(t *testing.T) {
 		t.Fatalf("click pushes: mode=%d busy=%q", m.mode, m.busy)
 	}
 
-	// The status-line button runs the quick action; its ▾ opens the menu.
+	// The toolbar's git button runs the quick action; its ▾ opens the menu.
 	m.busy, m.cmd = "", nil
-	m.status()
-	m.mouse(tea.MouseMsg{X: m.caretX + 1, Y: m.h - 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	if m.mode != mMenu {
+	if !clickTool(m, "C") || m.mode != mMenu {
 		t.Fatalf("caret opens menu: mode=%d", m.mode)
 	}
-	m.mouse(tea.MouseMsg{X: 0, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m.mouse(tea.MouseMsg{X: 0, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if m.mode != mNormal {
 		t.Fatalf("click outside closes: mode=%d", m.mode)
 	}
@@ -112,13 +111,24 @@ func TestCommitOnMain(t *testing.T) {
 		m.input.SetValue(s)
 		m.key(tea.KeyMsg{Type: tea.KeyEnter})
 	}
+	var diff string
+	defer func(f func(string, string, string) (string, error)) { runClaude = f }(runClaude)
+	runClaude = func(dir, prompt, in string) (string, error) {
+		diff = in
+		return "```\nfeat: add new.txt\n```", nil
+	}
 
 	m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	if m.mode != mGit || !strings.Contains(m.input.Placeholder, "new branch") {
 		t.Fatalf("asks for a branch: mode=%d %q", m.mode, m.input.Placeholder)
 	}
 	typ("fix-it")
-	typ("Add new.txt")
+	m.Update(m.cmd())
+	// The draft sees the untracked file, staged first, and lands in the message box.
+	if !strings.Contains(diff, "new.txt") || m.input.Value() != "feat: add new.txt" {
+		t.Fatalf("draft: diff=%q input=%q", diff, m.input.Value())
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.busy != "committing…" {
 		t.Fatalf("commits: busy=%q msg=%q", m.busy, m.msg)
 	}
@@ -126,7 +136,7 @@ func TestCommitOnMain(t *testing.T) {
 	if m.msg != "committed" || m.repo.Branch != "fix-it" {
 		t.Fatalf("after commit: msg=%q branch=%q", m.msg, m.repo.Branch)
 	}
-	if out, _ := git(r.Root, nil, "log", "-1", "--format=%s", "--name-only"); out != "Add new.txt\n\nnew.txt" {
+	if out, _ := git(r.Root, nil, "log", "-1", "--format=%s", "--name-only"); out != "feat: add new.txt\n\nnew.txt" {
 		t.Fatalf("commit: %q", out)
 	}
 }
@@ -150,5 +160,59 @@ func TestMergeFlow(t *testing.T) {
 	m.key(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.busy != "merging…" || m.cmd == nil {
 		t.Fatalf("merges: busy=%q", m.busy)
+	}
+}
+
+func TestDraftFails(t *testing.T) {
+	r := testRepo(t)
+	r.Branch = "feat"
+	m := newModel(r, "")
+	m.w, m.h, m.d.state = 100, 20, &State{}
+	defer func(f func(string, string, string) (string, error)) { runClaude = f }(runClaude)
+	runClaude = func(dir, prompt, in string) (string, error) { return "", errors.New("claude not found") }
+
+	m.commit(aCommit)
+	m.Update(m.cmd())
+	if m.mode != mGit || m.input.Value() != "" || m.msg != "claude not found" {
+		t.Fatalf("falls back to an empty box: mode=%d input=%q msg=%q", m.mode, m.input.Value(), m.msg)
+	}
+	// ctrl+r asks again; a draft for a box that was closed meanwhile is dropped.
+	runClaude = func(dir, prompt, in string) (string, error) { return "fix: retry", nil }
+	m.key(tea.KeyMsg{Type: tea.KeyCtrlR})
+	late := m.cmd
+	m.Update(m.cmd())
+	if m.input.Value() != "fix: retry" {
+		t.Fatalf("ctrl+r redrafts: %q", m.input.Value())
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyEsc})
+	m.ask(mGit, "other", func(string) {})
+	m.Update(late())
+	if m.input.Value() != "" {
+		t.Fatalf("stale draft landed: %q", m.input.Value())
+	}
+}
+
+func TestPickBase(t *testing.T) {
+	r := testRepo(t)
+	r.Branch = "feat"
+	m := newModel(r, "")
+	m.w, m.h = 100, 20
+	m.Update(m.load()()) // against main
+	if m.d.baseRef != "main" {
+		t.Fatalf("default base: %q %s", m.d.baseRef, m.msg)
+	}
+
+	if !clickTool(m, "b") || m.mode != mMenu || m.menu.items[m.menu.sel].label != "main" || slices.ContainsFunc(m.menu.items, func(i item) bool { return i.label == "feat" }) {
+		t.Fatalf("base picker: mode=%d %+v", m.mode, m.menu)
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyUp}) // "dev": the same commit as main, so only the name differs
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.baseFlag != "dev" || m.cmd == nil {
+		t.Fatalf("picks dev: %q", m.baseFlag)
+	}
+	d := m.cmd().(loaded)
+	m.Update(d)
+	if !d.once || m.d.baseRef != "dev" || !strings.Contains(m.rows[0].Text, "vs dev") {
+		t.Fatalf("reloads against dev: once=%v ref=%q top=%q", d.once, m.d.baseRef, m.rows[0].Text)
 	}
 }

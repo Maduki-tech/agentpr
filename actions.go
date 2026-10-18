@@ -1,6 +1,6 @@
 package main
 
-// The action button at the right of the status line: one button whose label follows the
+// The git action button at the right of the toolbar: one button whose label follows the
 // branch's state (after T3 Code's git action control), plus a menu with each step.
 
 import (
@@ -77,7 +77,7 @@ func menuItems(s GitState) []item {
 	}
 }
 
-// picker is a dropdown above the button: the git menu, the branch picker, the merge method.
+// picker is a dropdown below the button: the git menu, the branch picker, the merge method.
 type picker struct {
 	title string
 	items []item
@@ -117,7 +117,7 @@ func (m *model) gitMenu() {
 }
 
 func (m *model) open(title string, items []item, sel int, pick func(int)) {
-	m.mode, m.menu = mMenu, &picker{title, items, sel, pick}
+	m.mode, m.menu, m.help = mMenu, &picker{title, items, sel, pick}, false
 }
 
 func (m *model) choose(i int) {
@@ -183,8 +183,15 @@ func (m *model) repoOn(branch string) Repo {
 // commit asks for a new branch when on main/master, then for the message, and commits;
 // with a PR to create, it first asks for the PR too, so Esc anywhere changes nothing.
 func (m *model) commit(a act) {
+	r := *m.repo
 	then := func(branch string) {
-		m.ask(mGit, "commit message", func(msg string) {
+		// Staged now so the draft describes exactly what gets committed; Esc leaves it staged.
+		m.draft("commit message", commitPrompt, func() (string, error) {
+			if _, err := git(r.Root, nil, "add", "-A"); err != nil {
+				return "", err
+			}
+			return r.diffText("--cached")
+		}, func(msg string) {
 			if a == aCommitPushPR {
 				m.createPR(branch, msg)
 				return
@@ -215,15 +222,12 @@ func (m *model) commit(a act) {
 }
 
 // createPR asks for the base and the title (first line) and body, then commits when msg
-// is set, pushes and opens the PR. The title defaults to the commit message.
+// is set, pushes and opens the PR. The title and body come from the commit message, or
+// Claude drafts them from the Changeset's commits.
 func (m *model) createPR(branch, msg string) {
-	r := m.repoOn(branch)
-	text := msg
-	if text == "" {
-		text, _ = git(r.Root, nil, "log", "-1", "--format=%B")
-	}
+	r, from := m.repoOn(branch), m.d.base
 	m.pickBranch("PR base", r.Branch, "", func(base string) {
-		m.ask(mGit, "PR title, then the body", func(t string) {
+		create := func(t string) {
 			title, body, _ := strings.Cut(t, "\n")
 			m.exec("creating PR…", func() (string, error) {
 				if msg != "" {
@@ -234,8 +238,13 @@ func (m *model) createPR(branch, msg string) {
 				url, err := r.CreatePR(base, strings.TrimSpace(title), strings.TrimSpace(body))
 				return "opened " + url, err
 			})
-		})
-		m.input.SetValue(strings.TrimSpace(text))
+		}
+		if msg != "" {
+			m.ask(mGit, "PR title, then the body", create)
+			m.input.SetValue(msg)
+			return
+		}
+		m.draft("PR title, then the body", prPrompt, func() (string, error) { return r.diffText(from, "HEAD") }, create)
 	})
 }
 
@@ -268,7 +277,7 @@ func (m *model) pickBranch(title, head, def string, f func(string)) {
 		return
 	}
 	if def == "" {
-		def = strings.TrimPrefix(m.baseFlag, "origin/")
+		def = strings.TrimPrefix(m.d.baseRef, "origin/")
 	}
 	if def == "" && slices.Contains(bs, "master") && !slices.Contains(bs, "main") {
 		def = "master"
@@ -283,6 +292,29 @@ func (m *model) pickBranch(title, head, def string, f func(string)) {
 		}
 	}
 	m.open(title, items, sel, func(i int) { f(bs[i]) })
+}
+
+// pickBase switches the Base to another local or remote branch, and reloads right away.
+func (m *model) pickBase() {
+	refs, err := m.repo.Refs(m.repo.Branch)
+	if err != nil || len(refs) == 0 {
+		m.msg = "no other branch to compare against"
+		return
+	}
+	sel := max(0, slices.Index(refs, m.d.baseRef))
+	items := make([]item, len(refs))
+	for i, ref := range refs {
+		items[i] = item{label: ref, on: true}
+	}
+	m.open("Compare against", items, sel, func(i int) {
+		m.baseFlag = refs[i]
+		load := m.load()
+		m.cmd = func() tea.Msg {
+			d := load().(loaded)
+			d.once = true
+			return d
+		}
+	})
 }
 
 // exec runs git/gh off the UI goroutine; the outcome lands in the status line.
@@ -342,28 +374,7 @@ func (m *model) gotPR(p prMsg) {
 	m.pr, m.ghErr = p.pr, e
 }
 
-// button renders the split button: the action, and ▾ for the menu. It records where they are for the mouse.
-func (m *model) button() string {
-	label, a, _ := quick(m.gitState())
-	if m.busy != "" {
-		label, a = m.busy, aNone
-	}
-	main, caret := " ⎇ "+label+" ", "│ ▾ "
-	m.caretX = m.w - lipgloss.Width(caret)
-	m.btnX = m.caretX - lipgloss.Width(main)
-	st, cst := stBtn, stBtn
-	if a == aNone {
-		st = stBtnOff
-	}
-	if m.my == m.h-1 && m.mx >= m.caretX {
-		cst = stBtnHov
-	} else if m.my == m.h-1 && m.mx >= m.btnX && a != aNone {
-		st = stBtnHov
-	}
-	return st.Render(main) + cst.Render(caret)
-}
-
-// menuBox places the open menu at the bottom right of the diff pane, above the button:
+// menuBox places the open menu at the top right of the diff pane, below the button:
 // its left x, the screen row of its first shown item, the first shown item, and how many show.
 func (m *model) menuBox() (x, y, off, n int) {
 	p, vh := m.menu, m.viewH()
@@ -374,7 +385,7 @@ func (m *model) menuBox() (x, y, off, n int) {
 		w = max(w, lipgloss.Width(it.label)+2)
 	}
 	w = min(max(w, 20), m.w/2) + 2 // + border
-	return m.w - w, vh - n - 1, off, n
+	return m.w - w, 3, off, n      // below the toolbar, the top border and the title
 }
 
 func (m *model) menuView() []string {
@@ -395,12 +406,11 @@ func (m *model) menuView() []string {
 	return strings.Split(stMenu.Render(strings.Join(lines, "\n")), "\n")
 }
 
-// overlayMenu draws the open menu over the bottom right of the diff pane lines.
-func (m *model) overlayMenu(lines []string) {
-	box := m.menuView()
-	x, _, _, _ := m.menuBox()
-	for j, l := range box {
-		if y := len(lines) - len(box) + j; y >= 0 {
+// overlay draws box over the top right of the diff pane lines.
+func overlay(lines, box []string) {
+	for y, l := range box {
+		if y < len(lines) {
+			x := ansi.StringWidth(lines[y]) - ansi.StringWidth(l)
 			s := ansi.Truncate(lines[y], x, "")
 			lines[y] = s + "\x1b[0m" + strings.Repeat(" ", max(0, x-ansi.StringWidth(s))) + l
 		}
