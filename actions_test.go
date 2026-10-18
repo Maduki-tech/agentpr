@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -247,5 +248,114 @@ func TestPickBase(t *testing.T) {
 	m.Update(d)
 	if !d.once || m.d.baseRef != "dev" || !strings.Contains(m.rows[0].Text, "vs dev") {
 		t.Fatalf("reloads against dev: once=%v ref=%q top=%q", d.once, m.d.baseRef, m.rows[0].Text)
+	}
+}
+
+// testWorktree is testRepo with a bare origin and a linked worktree on the pushed branch "feat".
+func testWorktree(t *testing.T) (main, wt *Repo, origin string) {
+	t.Setenv("HERDR_ENV", "") // never the real herdr
+	main = testRepo(t)
+	origin, wt = t.TempDir(), &Repo{Root: filepath.Join(t.TempDir(), "wt"), GitDir: main.GitDir, Branch: "feat"}
+	for _, c := range []struct {
+		dir  string
+		args []string
+	}{
+		{origin, []string{"init", "-q", "--bare"}},
+		{main.Root, []string{"remote", "add", "origin", origin}},
+		{main.Root, []string{"push", "-q", "origin", "main", "feat"}},
+		{main.Root, []string{"worktree", "add", "-q", wt.Root, "feat"}},
+	} {
+		if _, err := git(c.dir, nil, c.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return main, wt, origin
+}
+
+func TestUnsaved(t *testing.T) {
+	main, wt, _ := testWorktree(t)
+	if main.Linked() || !wt.Linked() {
+		t.Fatalf("linked: main=%v wt=%v", main.Linked(), wt.Linked())
+	}
+	lost := func() string {
+		s, err := wt.Unsaved()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := lost(); s != "" {
+		t.Fatalf("clean: %q", s)
+	}
+	os.WriteFile(filepath.Join(wt.Root, "a"), []byte("a"), 0o644)
+	git(wt.Root, nil, "commit", "-q", "--allow-empty", "-m", "local")
+	if s := lost(); s != "1 untracked file, 1 commit on no remote" {
+		t.Fatalf("extras: %q", s)
+	}
+	git(wt.Root, nil, "add", "a")
+	os.WriteFile(filepath.Join(wt.Root, "b"), []byte("b"), 0o644)
+	os.WriteFile(filepath.Join(wt.Root, "c"), []byte("c"), 0o644)
+	if s := lost(); s != "1 uncommitted change, 2 untracked files, 1 commit on no remote" {
+		t.Fatalf("staged: %q", s)
+	}
+}
+
+func TestRemoveSteps(t *testing.T) {
+	r := Repo{Root: "/wt", Branch: "feat"}
+	flat := func(ss []step) (out []string) {
+		for _, s := range ss {
+			out = append(out, s.dir+": "+strings.Join(s.cmd, " "))
+		}
+		return out
+	}
+	head := []string{"/wt: git push -q origin --delete feat", "/wt: git switch -q --detach", "/main: git branch -q -D feat"}
+	if got, want := flat(removeSteps(r, "/main", "", false)), append(slices.Clone(head), "/main: git worktree remove /wt"); !slices.Equal(got, want) {
+		t.Errorf("git: %q", got)
+	}
+	if got, want := flat(removeSteps(r, "/main", "w2", true)), append(slices.Clone(head), "/main: herdr worktree remove --workspace w2 --force"); !slices.Equal(got, want) {
+		t.Errorf("herdr: %q", got)
+	}
+}
+
+func TestRemoveAfterMerge(t *testing.T) {
+	main, wt, origin := testWorktree(t)
+	m := newModel(wt, "")
+	m.w, m.h, m.d.state = 300, 20, &State{}
+
+	// Unsaved work: ask, and n keeps everything.
+	m.Update(merged{pr: 3, msg: "merged PR #3", lost: "1 untracked file"})
+	if m.mode != mConfirm || !strings.Contains(m.status(), "loses 1 untracked file: remove anyway? (y/n)") {
+		t.Fatalf("asks: mode=%d %q", m.mode, m.status())
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.mode != mNormal || m.busy != "" || m.msg != "merged PR #3 · worktree kept" {
+		t.Fatalf("keeps: busy=%q msg=%q", m.busy, m.msg)
+	}
+
+	// A failure keeps agentpr open with the error, and the worktree.
+	git(main.Root, nil, "remote", "set-url", "origin", filepath.Join(origin, "gone"))
+	_, cmd := m.Update(merged{pr: 3, msg: "merged PR #3"})
+	if d, ok := cmd().(gitDone); !ok || !strings.Contains(fmt.Sprint(d.err), "merged #3, but removing the worktree failed") {
+		t.Fatalf("failure: %+v", d)
+	}
+	if _, err := os.Stat(wt.Root); err != nil {
+		t.Fatalf("worktree removed after a failure: %v", err)
+	}
+	git(main.Root, nil, "remote", "set-url", "origin", origin)
+
+	_, cmd = m.Update(merged{pr: 3, msg: "merged PR #3"})
+	if m.busy != "removing worktree…" {
+		t.Fatalf("removes: busy=%q", m.busy)
+	}
+	if msg := cmd(); msg != (tea.QuitMsg{}) {
+		t.Fatalf("quits: %+v", msg)
+	}
+	if _, err := os.Stat(wt.Root); !os.IsNotExist(err) {
+		t.Fatalf("worktree still there: %v", err)
+	}
+	for dir, ref := range map[string]string{main.Root: "refs/heads/feat", origin: "refs/heads/feat"} {
+		if out, _ := git(dir, nil, "for-each-ref", ref); out != "" {
+			t.Fatalf("branch left in %s: %q", dir, out)
+		}
 	}
 }

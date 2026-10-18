@@ -218,3 +218,27 @@ func uninstallHook(path string) (bool, error) {
 		return keep
 	})
 }
+
+// herdrWorkspace is the herdr workspace open on the worktree root, or "" outside herdr or when there's none.
+func herdrWorkspace(root string) string {
+	if os.Getenv("HERDR_ENV") != "1" {
+		return ""
+	}
+	var list struct {
+		Result struct {
+			Worktrees []struct {
+				Path string `json:"path"`
+				WS   string `json:"open_workspace_id"`
+			} `json:"worktrees"`
+		} `json:"result"`
+	}
+	if herdrJSON(&list, "worktree", "list", "--cwd", root) != nil {
+		return ""
+	}
+	for _, w := range list.Result.Worktrees {
+		if w.Path == root {
+			return w.WS
+		}
+	}
+	return ""
+}

@@ -405,3 +405,88 @@ func findAnchor(lines []Line, t *Thread) int {
 	}
 	return best
 }
+
+// Linked is whether r is a linked worktree (git worktree add), not the main checkout.
+func (r *Repo) Linked() bool {
+	d, err := git(r.Root, nil, "rev-parse", "--path-format=absolute", "--git-dir")
+	return err == nil && d != r.GitDir
+}
+
+// Unsaved says what removing the worktree would lose: uncommitted changes, untracked files
+// and commits on no remote; "" when nothing.
+func (r *Repo) Unsaved() (string, error) {
+	st, err := git(r.Root, nil, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	changed, untracked := 0, 0
+	for _, l := range strings.Split(st, "\n") {
+		if strings.HasPrefix(l, "??") {
+			untracked++
+		} else if l != "" {
+			changed++
+		}
+	}
+	out, err := git(r.Root, nil, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	if err != nil {
+		return "", err
+	}
+	commits, _ := strconv.Atoi(out)
+	var lost []string
+	for _, c := range []struct {
+		n         int
+		one, many string
+	}{{changed, "uncommitted change", "uncommitted changes"}, {untracked, "untracked file", "untracked files"}, {commits, "commit on no remote", "commits on no remote"}} {
+		if c.n == 1 {
+			lost = append(lost, "1 "+c.one)
+		} else if c.n > 1 {
+			lost = append(lost, fmt.Sprintf("%d %s", c.n, c.many))
+		}
+	}
+	return strings.Join(lost, ", "), nil
+}
+
+type step struct {
+	dir string
+	cmd []string // git or herdr, and its arguments
+}
+
+// removeSteps deletes the merged branch everywhere, from the main checkout main: the remote
+// branch, the local one (detached first: git won't delete a checked-out branch), then the
+// worktree, through herdr when ws is its herdr workspace, which also closes the workspace
+// and with it maybe agentpr's own pane, so it comes last.
+func removeSteps(r Repo, main, ws string, force bool) []step {
+	steps := []step{
+		{r.Root, []string{"git", "push", "-q", "origin", "--delete", r.Branch}},
+		{r.Root, []string{"git", "switch", "-q", "--detach"}},
+		{main, []string{"git", "branch", "-q", "-D", r.Branch}},
+	}
+	rm := []string{"git", "worktree", "remove", r.Root}
+	if ws != "" {
+		rm = []string{"herdr", "worktree", "remove", "--workspace", ws}
+	}
+	if force {
+		rm = append(rm, "--force")
+	}
+	return append(steps, step{main, rm})
+}
+
+// Remove runs removeSteps; force also removes uncommitted and untracked files.
+func (r *Repo) Remove(ws string, force bool) error {
+	out, err := git(r.Root, nil, "worktree", "list", "--porcelain")
+	if err != nil {
+		return err
+	}
+	main := strings.TrimPrefix(strings.SplitN(out, "\n", 2)[0], "worktree ")
+	for _, s := range removeSteps(*r, main, ws, force) {
+		if s.cmd[0] == "herdr" {
+			err = herdrJSON(nil, s.cmd[1:]...)
+		} else if _, err = git(s.dir, []string{"GIT_TERMINAL_PROMPT=0"}, s.cmd[1:]...); err != nil && strings.Contains(err.Error(), "remote ref does not exist") {
+			err = nil // GitHub deleted it on merge
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
