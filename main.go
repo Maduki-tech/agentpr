@@ -12,7 +12,10 @@ import (
 
 const usage = `agentpr: review the changes a coding agent made, like a pull request.
 
-  agentpr [--base <ref>]          open the review TUI for the current branch
+  agentpr [--base <ref>] [--theme <name>]
+                                   open the review TUI for the current branch
+                                   (theme: catppuccin-mocha|macchiato|frappe|latte
+                                   or any chroma style; default $AGENTPR_THEME)
   agentpr reply <thread-id> <text> answer a Thread (used by the Author)
   agentpr install                  open agentpr next to Claude in herdr after each turn (Claude Code Stop hook)
   agentpr uninstall                remove that hook
@@ -22,14 +25,15 @@ const usage = `agentpr: review the changes a coding agent made, like a pull requ
 func main() {
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	base := flag.String("base", "", "compare against this ref instead of the detected Base")
+	theme := flag.String("theme", os.Getenv("AGENTPR_THEME"), "color theme")
 	flag.Parse()
-	if err := run(*base, flag.Args()); err != nil {
+	if err := run(*base, *theme, flag.Args()); err != nil {
 		fmt.Fprintln(os.Stderr, "agentpr:", err)
 		os.Exit(1)
 	}
 }
 
-func run(base string, args []string) error {
+func run(base, theme string, args []string) error {
 	if len(args) == 1 {
 		switch args[0] {
 		case "hook":
@@ -76,6 +80,10 @@ func run(base string, args []string) error {
 		flag.Usage()
 		os.Exit(2)
 	}
-	_, err = tea.NewProgram(newModel(repo, base), tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
+	m := newModel(repo, base)
+	if theme != "" && !setTheme(theme) {
+		m.msg = fmt.Sprintf("unknown theme %q; using %s", theme, themes[0])
+	}
+	_, err = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run()
 	return err
 }
