@@ -1,4 +1,4 @@
-module agentpr
+module github.com/Maduki-tech/agentpr
 
 go 1.27.2
 

@@ -1,52 +1,69 @@
 # agentpr
 
-Review the changes a coding agent (currently Claude Code) made on your branch, like a pull request, in the terminal. Comment on lines, submit, and Claude gets your Review, fixes things, and answers each Thread.
+Review what your coding agent changed like a pull request, in the terminal. Comment on lines, submit, and Claude Code gets your Review, fixes the code and answers each Thread.
+
+![agentpr showing a Go diff with a review Thread and Claude's answer](docs/images/diff.png)
+
+## Features
+
+- **A review loop with Claude Code.** Comment on a line, a selection, a file or the whole Changeset. Submit, and the Review goes straight to the Claude pane working in the repo. Claude's answers show up live.
+- **Threads** that stay with the code: they follow it as it moves, are marked *outdated* when it's gone, and are stored per branch in `.git/agentpr/`, so they never end up in a commit.
+- **Opens next to Claude** in [herdr](https://herdr.dev) after every turn that left changes, without taking focus.
+- **A toolbar** with a button for every action, so you can click instead of remembering keys. Vim-style keys work too.
+- **Git actions**: commit with a message drafted by Claude, push, create and merge the GitHub PR, and clean up the worktree after the merge, from one button that follows the branch's state.
+- **Any Base**: compares against `main` by default, or against any local or remote branch you pick.
+- **Syntax highlighting** and themes: the four Catppuccin flavors or any [chroma style](https://xyproto.github.io/splash/docs/).
+
+| A Thread, with a reply being written | Commit message drafted by Claude |
+| --- | --- |
+| ![A Thread with the Reviewer's comment, Claude's answer and a reply being typed](docs/images/thread.png) | ![The commit message box prefilled by Claude](docs/images/commit.png) |
+
+![agentpr in the Catppuccin Latte theme](docs/images/latte.png)
+
+## Requirements
+
+- git
+- Go 1.27 or newer, to build it
+- A truecolor terminal, for the intended colors
+- Optional: [Claude Code](https://claude.com/claude-code) (`claude`) for the review loop and drafted commit messages, [herdr](https://herdr.dev) to send Reviews to Claude and open agentpr next to it, the [GitHub CLI](https://cli.github.com) (`gh`) for pull requests, `wl-copy` or `xclip` for the clipboard fallback
 
 ## Install
 
 ```sh
-go build -o ~/.local/bin/agentpr .
+go install github.com/Maduki-tech/agentpr@latest
 ```
 
-`agentpr` must be on your `PATH`: Claude calls `agentpr reply` to answer Threads.
-
-### Open automatically next to Claude
+Or from source:
 
 ```sh
-agentpr install     # adds a Stop hook to ~/.claude/settings.json (backup in settings.json.bak)
-agentpr uninstall   # removes it
+git clone https://github.com/Maduki-tech/agentpr
+cd agentpr
+go build -o ~/.local/bin/agentpr .    # or: just install
 ```
 
-At the end of every Claude Code turn, `agentpr hook` runs. If Claude is in a herdr pane, its directory is a git repo, and the Changeset is not empty, agentpr opens in a split to the right of Claude, without taking focus. If an agentpr pane for that worktree is already open in the tab, nothing happens: it reloads live. Outside herdr, or with no changes, the hook does nothing. It never blocks Claude; errors go to `.git/agentpr/hook.log`.
+`agentpr` must be on your `PATH`: Claude runs `agentpr reply` to answer Threads.
 
-Set `AGENTPR_AUTO_OPEN=0` to turn it off without uninstalling.
-
-## Usage
-
-Run it inside a git repo, ideally in a [herdr](https://herdr.dev) pane next to Claude:
+To open agentpr next to Claude after every turn (in herdr):
 
 ```sh
-agentpr                # review the current branch
-agentpr --base <ref>   # compare against another branch, e.g. origin/develop
-agentpr --theme catppuccin-latte
+agentpr install     # adds a Stop hook to ~/.claude/settings.json
 ```
 
-Code is syntax-highlighted by file type, and the whole UI follows the theme. Themes: `catppuccin-mocha` (default), `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`, or any [chroma style](https://xyproto.github.io/splash/docs/) name. Set a default with `AGENTPR_THEME`; `T` cycles the Catppuccin flavors while running. Use a truecolor terminal for the intended colors.
+## Quick start
 
-What gets reviewed (the Changeset) is everything that differs from the Base, like `git diff` against it: committed, uncommitted, and new untracked files. The Base is the merge-base with `main`/`master` on a feature branch (with `origin/main` when it is ahead of your local `main`). On `main` itself it's the upstream (`origin/main`), so unpushed commits show too; without an upstream, `HEAD`. To compare against another branch, local or remote, click `Base: … ▾` in the toolbar or press `b`; `--base` sets it at startup. The status line shows the active Base.
+Run it in a git repo, ideally in a herdr pane next to Claude:
 
-### The loop
+```sh
+agentpr
+```
 
 1. Move to a line (or select lines with `V`), press `Enter`, type your comment, press `Enter`. Comments stay *pending* until you submit.
-2. Press `S`, then `r` (request changes). The Review is sent to the Claude pane working in this repo via herdr. If there are several, you pick one; if there are none, it's copied to the clipboard.
-3. Claude fixes the code and answers each Thread with `agentpr reply <thread-id> "..."`. Answers show up live.
+2. Press `S`, then `r` (request changes). The Review goes to the Claude pane working in this repo. If there are several, you pick one; if there is none, it's copied to the clipboard.
+3. Claude fixes the code and answers each Thread with `agentpr reply <thread-id> "..."`. The answers show up live.
 4. Resolve Threads with `R`, reply with `Enter`, repeat. When you're happy, `S` then `a` (approve) archives the Threads.
+5. Ship it with the button at the right of the toolbar (`c`): commit, push, create and merge the PR.
 
-### Toolbar
-
-The top row has a button for each action, so you can click instead of remembering keys: `‹ File` / `File ›`, `💬 Comment`, `✓ Resolve`, `Request changes`, `Approve`, `Base: … ▾` (compare against another branch), `/ Search`, `◐` theme, `? Keys` (the key list), the git action button with its `▾` menu, and `✕ Quit`. A click does exactly what the key does; greyed-out buttons can't do anything right now. On narrow terminals labels shrink to icons, then the least used buttons drop out.
-
-### Keys
+## Keys
 
 | Key | Action |
 | --- | --- |
@@ -55,34 +72,54 @@ The top row has a button for each action, so you can click instead of rememberin
 | `]f` / `[f` | Next / previous file |
 | `]t` / `[t` | Next / previous Thread |
 | `v` / `V` | Select lines |
-| `Enter` | Comment on line, selection, file header, or top row (whole Changeset); reply when on a Thread |
-| `R` | Resolve / unresolve Thread |
-| `S` | Submit Review: `r` request changes, `a` approve |
-| `c` | Run the action button (see below) |
+| `Enter` | Comment on the line, selection, file header, or top row (whole Changeset); reply when on a Thread |
+| `R` | Resolve / unresolve the Thread |
+| `S` | Submit the Review: `r` request changes, `a` approve |
+| `c` | Run the git action button |
 | `C` | Git menu: Commit, Push, Create PR, Merge PR, View PR |
 | `b` | Compare against another branch (local or remote) |
 | `T` | Next theme |
+| `/`, `n` / `N` | Search, next / previous match |
 | `?` | Show / hide the key list |
-| `/`, `n` / `N` | Search |
+| `Esc` | Show all files again; close the key list |
 | `q` | Quit (pending comments are kept) |
-| Mouse | Click toolbar buttons, wheel scrolls, click a file in the list to show only that file (click again or `Esc` for all), click selects a row, drag selects lines, click the selected row/lines to comment |
-
-### Shipping
-
-When the Changeset looks good, ship it from the action button at the right of the toolbar (`c`, or click it; `▾` or `C` opens the menu with each step). Its label follows the branch: `Commit` (no remote), `Commit, push & create PR`, `Commit & push` once a PR exists, `Push & create PR` / `Create PR` for committed work, then `Merge PR`.
-
-- A commit stages everything the Changeset shows (tracked and untracked). On `main`/`master` you're asked for a new branch first, so a PR is possible; open Threads move with you.
-- The commit message is drafted by Claude: agentpr stages the changes (`git add -A`) and pipes `git diff --cached` (stat and diff, cut at 100KB) to `claude -p --model haiku`, then prefills the message box. Edit it or press `Enter`; `Ctrl-R` asks again. If `claude` is missing, fails, or takes over 60s, the box stays empty and the status line says why. Esc leaves the changes staged.
-- Creating a PR pushes the branch, then asks for the base branch (preselected: the Base's branch) and the title (first line) and body, prefilled with the commit message, or drafted by Claude from the branch's diff when there's no new commit.
-- Merging asks for the target branch (preselected: the PR's base; another one retargets the PR) and the method: merge, squash (preselected) or rebase.
-- Merging from a linked worktree (`git worktree add`, or a herdr worktree workspace) then cleans up and quits: it deletes the branch on `origin` and locally, and removes the worktree, through `herdr worktree remove` when it's open as a herdr workspace, which also closes the workspace. If the worktree has uncommitted changes, untracked files or commits on no remote, it asks first: `y` removes anyway, `n` keeps everything. If a step fails, agentpr stays open with the error. In the main checkout, merging removes nothing.
-
-PRs use the [GitHub CLI](https://cli.github.com) (`gh`); if it's missing, not logged in, or no remote is on GitHub, the PR actions are off and the status line says why. In menus: `j`/`k` or the mouse to move, `Enter` or click to pick, `Esc` to close.
 
 In the comment box: `Enter` saves, `Ctrl-J` adds a newline, `Esc` cancels.
 
-The mouse is captured, so hold `Shift` to select text in your terminal.
+**Mouse:** click toolbar buttons, scroll with the wheel, click a file in the list to show only that file (click it again or press `Esc` for all), click a row to select it, drag to select lines, and click the selected row or lines to comment. The mouse is captured, so hold `Shift` to select text in your terminal.
 
-Threads are stored per branch in `.git/agentpr/`, so they never end up in a commit. A Thread whose code is gone is shown as *outdated*, with the snippet it was written on.
+**Toolbar:** `‹ File` / `File ›`, `💬 Comment`, `✓ Resolve`, `Request changes`, `Approve`, `Base: … ▾`, `/ Search`, `◐` theme, `? Keys`, the git action button with its `▾` menu, and `✕ Quit`. A click does exactly what the key does; greyed-out buttons can't do anything right now. On narrow terminals the labels shrink to icons, then the least used buttons drop out.
 
-See [GLOSSARY.md](GLOSSARY.md) for the terms and [docs/adr](docs/adr) for the design decisions.
+## Configuration
+
+```sh
+agentpr --base origin/develop          # compare against another ref
+agentpr --theme catppuccin-latte       # or any chroma style name
+```
+
+| Setting | Effect |
+| --- | --- |
+| `--base <ref>` | The Base to compare against at startup. `b` changes it while running. |
+| `--theme <name>` | `catppuccin-mocha` (default), `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`, or any chroma style. `T` cycles the Catppuccin flavors. |
+| `AGENTPR_THEME` | The default for `--theme`. |
+| `AGENTPR_AUTO_OPEN=0` | Turns off opening next to Claude, without uninstalling the hook. |
+| `agentpr install` / `agentpr uninstall` | Add or remove the Claude Code Stop hook in `~/.claude/settings.json` (backup in `settings.json.bak`). |
+
+## How it works
+
+What gets reviewed, the Changeset, is everything that differs from the Base, like `git diff` against it: committed, uncommitted, and new untracked files. On a feature branch the Base is the merge-base with `main` (or `master`; `origin/main` when it's ahead of your local `main`). On `main` itself it's the upstream, so unpushed commits show; without an upstream, `HEAD`. The status line shows the active Base, and agentpr reloads when anything changes.
+
+Threads are stored per branch in `.git/agentpr/`. A Thread whose code is gone is shown as *outdated*, with the snippet it was written on.
+
+- [herdr and Claude Code](docs/herdr-and-claude.md): the hook, and how a Review reaches Claude
+- [Git actions](docs/git-actions.md): the button's states, drafted commit messages, PRs, and worktree cleanup
+- [GLOSSARY.md](GLOSSARY.md): the terms (Changeset, Base, Thread, Review…)
+- [docs/adr](docs/adr): the design decisions
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
