@@ -197,8 +197,9 @@ shot() {
 	echo "docs/images/$name.png"
 }
 
-# G then a search scrolls the match to the top of the screen.
-shot diff "" "claude:" G / "Allow takes" Enter
+# G then a search scrolls the match to the top of the screen; k k k j j j then puts the end of
+# the previous file above it, so the file header shows with its spacer.
+shot diff "" "claude:" G / "limiter.go" Enter k k k j j j
 shot thread "" "add a ponytail" G / "buckets map" Enter j Enter "Fine for now, add a ponytail: comment."
 shot commit "" "feat(server)" c
-shot latte "--theme catppuccin-latte" "claude:" G / "Allow takes" Enter
+shot latte "--theme catppuccin-latte" "claude:" G / "limiter.go" Enter k k k j j j
