@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,20 +33,8 @@ const (
 
 var modeNames = []string{"NORMAL", "VISUAL", "COMMENT", "SEARCH", "SUBMIT", "SEND TO", "GIT", "GIT"}
 
-var (
-	stTop     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	stFile    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	stHunk    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	stAdd     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	stDel     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	stCtx     = lipgloss.NewStyle()
-	stThread  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	stSel     = lipgloss.NewStyle().Background(lipgloss.Color("238"))
-	stHover   = lipgloss.NewStyle().Background(lipgloss.Color("236"))
-	stStatus  = lipgloss.NewStyle().Reverse(true)
-	stCurFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-)
+// Set from the active theme by setTheme.
+var stTop, stFile, stHunk, stAdd, stDel, stCtx, stThread, stDone, stSel, stHover, stStatus, stCurFile lipgloss.Style
 
 // Row is one screen line of the diff pane: a diff line or a line of an inline Thread.
 type Row struct {
@@ -100,6 +89,7 @@ type model struct {
 	btnX     int // action button's left edge on the status line
 	caretX   int // its ▾ (menu) part
 	ticks    int
+	hl       map[string]*highlight
 }
 
 func newModel(r *Repo, base string) *model {
@@ -108,7 +98,7 @@ func newModel(r *Repo, base string) *model {
 	ta.Prompt = "│ "
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.SetHeight(3)
-	return &model{repo: r, baseFlag: base, input: ta, mx: -1, my: -1}
+	return &model{repo: r, baseFlag: base, input: ta, mx: -1, my: -1, hl: map[string]*highlight{}}
 }
 
 func (m *model) Init() tea.Cmd { return m.load() }
@@ -311,6 +301,8 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		m.primary()
 	case "C":
 		m.gitMenu()
+	case "T":
+		m.msg = "theme: " + nextTheme()
 	case "i":
 		m.showFull = !m.showFull
 		m.rebuild()
@@ -433,6 +425,9 @@ func (m *model) ask(md mode, placeholder string, f func(string)) {
 	m.mode, m.onInput = md, f
 	m.input.Reset()
 	m.input.Placeholder = placeholder
+	// Themed here, not in setTheme: the theme can't change while the box is open.
+	m.input.FocusedStyle = textarea.Style{Base: stCtx, CursorLine: stHover, Text: stCtx, EndOfBuffer: stDone, Placeholder: stDone, Prompt: stHunk}
+	m.input.Cursor.Style = stCtx.Reverse(true)
 	m.input.Focus()
 }
 
@@ -640,6 +635,9 @@ func (m *model) build() {
 		}
 	}
 	for _, f := range files {
+		if h := m.hl[f.Path]; h == nil || !slices.Equal(h.lines, f.Lines) {
+			m.hl[f.Path] = &highlight{lines: f.Lines}
+		}
 		rows = append(rows, Row{Kind: KFile, Path: f.Path})
 		at := map[int][]*Thread{}
 		for _, t := range st.Threads {
@@ -742,19 +740,21 @@ func (m *model) View() string {
 	lines := make([]string, vh)
 	for y := range lines {
 		var b strings.Builder
-		left, lst := "", lipgloss.NewStyle()
+		left, lst := "", stCtx
 		if i := off + y; i < len(files) {
 			left = " " + files[i].Path
 			if files[i].Path == curPath {
 				lst = stCurFile
 			}
 			if m.my == y && m.mx < lw {
-				lst = lst.Inherit(stHover)
+				lst = lst.Background(stHover.GetBackground())
 			}
 		}
-		b.WriteString(lst.Width(lw-1).Render(ansi.Truncate(left, lw-1, "…")) + "│")
+		b.WriteString(lst.Width(lw-1).Render(ansi.Truncate(left, lw-1, "…")) + stDone.Render("│"))
 		if i := m.top + y; i < len(m.rows) {
 			b.WriteString(m.renderRow(i, i >= lo && i <= hi, m.my == y && m.mx >= lw))
+		} else {
+			b.WriteString(stCtx.Width(m.diffW()).Render(""))
 		}
 		lines[y] = b.String()
 	}
@@ -762,7 +762,7 @@ func (m *model) View() string {
 		m.overlayMenu(lines)
 	}
 	if m.typing() {
-		lines = append(lines, m.input.View())
+		lines = append(lines, stCtx.Width(m.w).Render(m.input.View()))
 	}
 	return strings.Join(append(lines, m.status()), "\n")
 }
@@ -775,7 +775,7 @@ func (m *model) renderRow(i int, selected, hovered bool) string {
 		}
 		return strconv.Itoa(n)
 	}
-	var s string
+	var s, code string
 	st := stCtx
 	switch r.Kind {
 	case KTop:
@@ -790,23 +790,37 @@ func (m *model) renderRow(i int, selected, hovered bool) string {
 			st = stDone
 		}
 	default:
-		s = fmt.Sprintf("%4s %4s ", num(r.Line.Old), num(r.Line.New)) + strings.ReplaceAll(r.Line.Text, "\t", "    ")
+		s, code = fmt.Sprintf("%4s %4s ", num(r.Line.Old), num(r.Line.New)), r.Line.Text
 		if r.Kind == KAdd {
-			st = stAdd
+			st = stAdd.Background(bgAdd)
 		} else if r.Kind == KDel {
-			st = stDel
+			st = stDel.Background(bgDel)
 		}
 	}
-	w := m.diffW() - 1
-	s = ansi.Truncate(s, w, "…")
 	if i == m.cur {
-		st = st.Reverse(true)
+		st = st.Background(bgCur)
 	} else if selected && m.mode == mVisual {
-		st = st.Inherit(stSel)
+		st = st.Background(stSel.GetBackground())
 	} else if hovered {
-		st = st.Inherit(stHover)
+		st = st.Background(stHover.GetBackground())
 	}
-	return st.Width(w).Render(s)
+	if code != "" {
+		// Gutter and +/- marker keep the diff colors; the code itself gets token colors on the row's background.
+		bg := st.GetBackground().(lipgloss.Color)
+		s = stGutter.Background(bg).Render(s) + st.Render(code[:1])
+		var toks []chroma.Token
+		if h := m.hl[r.Path]; h != nil {
+			toks = h.tokens(r.Path, r.Line)
+		}
+		if toks == nil {
+			toks = []chroma.Token{{Type: chroma.Text, Value: code[1:]}}
+		}
+		for _, t := range toks {
+			s += tokStyle(t.Type, bg).Render(strings.ReplaceAll(strings.TrimRight(t.Value, "\n"), "\t", "    "))
+		}
+	}
+	w := m.diffW()
+	return st.Width(w).Render(ansi.Truncate(s, w-1, "…"))
 }
 
 func (m *model) status() string {
@@ -844,7 +858,7 @@ func (m *model) status() string {
 		case mInput, mSearch:
 			hint = "enter save · ctrl+j newline · esc cancel"
 		default:
-			hint = "enter comment · v select · R resolve · S submit · c git action · C git menu · i full/new · / search · q quit"
+			hint = "enter comment · v select · R resolve · S submit · c git action · C git menu · i full/new · T theme · / search · q quit"
 		}
 	}
 	btn := m.button()

@@ -28,7 +28,10 @@ Run it inside a git repo, ideally in a [herdr](https://herdr.dev) pane next to C
 ```sh
 agentpr                # review the current branch
 agentpr --base <ref>   # compare against another ref
+agentpr --theme catppuccin-latte
 ```
+
+Code is syntax-highlighted by file type, and the whole UI follows the theme. Themes: `catppuccin-mocha` (default), `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`, or any [chroma style](https://xyproto.github.io/splash/docs/) name. Set a default with `AGENTPR_THEME`; `T` cycles the Catppuccin flavors while running. Use a truecolor terminal for the intended colors.
 
 What gets reviewed (the Changeset) is everything that differs from the Base: committed, uncommitted, and new untracked files. The Base is the merge-base with `main`/`master` on a feature branch, or `HEAD` on `main` itself. After your first submitted Review, you only see what changed since then (`i` toggles the full Changeset).
 
@@ -54,6 +57,7 @@ What gets reviewed (the Changeset) is everything that differs from the Base: com
 | `c` | Run the action button (see below) |
 | `C` | Git menu: Commit, Push, Create PR, Merge PR, View PR |
 | `i` | Toggle full Changeset / changes since last Review |
+| `T` | Next theme |
 | `/`, `n` / `N` | Search |
 | `q` | Quit (pending comments are kept) |
 | Mouse | Wheel scrolls, click a file in the list to show only that file (click again or `Esc` for all), click selects a row, drag selects lines, click the selected row/lines to comment |

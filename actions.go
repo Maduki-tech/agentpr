@@ -27,12 +27,8 @@ const (
 	aViewPR
 )
 
-var (
-	stBtn    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("4"))
-	stBtnHov = stBtn.Background(lipgloss.Color("12"))
-	stBtnOff = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Background(lipgloss.Color("8"))
-	stMenu   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4"))
-)
+// Set from the active theme by setTheme.
+var stBtn, stBtnHov, stBtnOff, stMenu lipgloss.Style
 
 // quick picks the button's label and action; aNone comes with the reason it's disabled.
 func quick(s GitState) (string, act, string) {
@@ -385,9 +381,9 @@ func (m *model) menuView() []string {
 	p := m.menu
 	x, _, off, n := m.menuBox()
 	w := m.w - x - 2
-	lines := []string{lipgloss.NewStyle().Bold(true).Width(w).Render(" " + p.title)}
+	lines := []string{stCtx.Bold(true).Width(w).Render(" " + p.title)}
 	for i := off; i < off+n; i++ {
-		st := lipgloss.NewStyle()
+		st := stCtx
 		if !p.items[i].on {
 			st = stDone
 		}
