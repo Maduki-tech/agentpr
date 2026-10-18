@@ -39,9 +39,60 @@ func TestMouse(t *testing.T) {
 	if m.mode != mVisual || m.anchor != 3 || m.cur != 4 {
 		t.Fatalf("drag selects: mode=%d anchor=%d cur=%d", m.mode, m.anchor, m.cur)
 	}
-	ev(tea.MouseActionPress, tea.MouseButtonWheelUp, 0)
-	if m.cur != 1 {
-		t.Fatalf("wheel scrolls: cur=%d", m.cur)
+}
+
+// The wheel scrolls the view and leaves the cursor; moving the cursor brings it back into view.
+func TestWheelScroll(t *testing.T) {
+	m := newModel(nil, "")
+	m.w, m.h, m.d.state = 100, 12, &State{} // 10 rows of view
+	m.rows = []Row{{Kind: KTop}, {Kind: KFile, Path: "a"}}
+	for n := 1; n <= 28; n++ {
+		m.rows = append(m.rows, Row{Kind: KAdd, Path: "a", Line: Line{Kind: KAdd, New: n, Text: "x"}})
+	}
+	send := func(msg tea.Msg) { m.Update(msg) }
+	wheel := func(b tea.MouseButton, n int) {
+		for range n {
+			send(tea.MouseMsg{X: 50, Y: 5, Action: tea.MouseActionPress, Button: b})
+		}
+	}
+	m.cur = 2
+	if wheel(tea.MouseButtonWheelDown, 2); m.top != 6 || m.cur != 2 {
+		t.Fatalf("wheel down: top=%d cur=%d", m.top, m.cur)
+	}
+	if wheel(tea.MouseButtonWheelDown, 10); m.top != 20 {
+		t.Fatalf("clamped at the bottom: top=%d", m.top)
+	}
+	if wheel(tea.MouseButtonWheelUp, 10); m.top != 0 || m.cur != 2 {
+		t.Fatalf("clamped at the top: top=%d cur=%d", m.top, m.cur)
+	}
+	wheel(tea.MouseButtonWheelDown, 4) // top 12, cursor off screen
+	if send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}}); m.cur != 3 || m.top != 3 {
+		t.Fatalf("j snaps back: top=%d cur=%d", m.top, m.cur)
+	}
+	wheel(tea.MouseButtonWheelDown, 2) // top 9
+	send(tea.MouseMsg{X: 50, Y: 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.cur != 12 || m.top != 9 {
+		t.Fatalf("click picks the row under the mouse: top=%d cur=%d", m.top, m.cur)
+	}
+	wheel(tea.MouseButtonWheelDown, 3)
+	if send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}}); m.top != 18 {
+		t.Fatalf("a key that leaves the cursor keeps the scroll: top=%d", m.top)
+	}
+}
+
+func TestReloadKeepsScroll(t *testing.T) {
+	m := newModel(nil, "")
+	m.w, m.h = 100, 12
+	var lines []Line
+	for n := 1; n <= 30; n++ {
+		lines = append(lines, Line{Kind: KAdd, New: n, Text: "x"})
+	}
+	d := loaded{once: true, base: "abc", state: &State{}, files: []File{{Path: "a", Lines: lines}}}
+	m.Update(d)
+	m.Update(tea.MouseMsg{X: 50, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	d.raw = []byte("changed")
+	if m.Update(d); m.top != 3 || m.cur != 0 {
+		t.Fatalf("reload: top=%d cur=%d", m.top, m.cur)
 	}
 }
 
