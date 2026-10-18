@@ -76,7 +76,7 @@ When the Changeset looks good, ship it from the action button at the right of th
 - Creating a PR pushes the branch, then asks for the base branch (preselected: the Base's branch) and the title (first line) and body, prefilled with the commit message, or drafted by Claude from the branch's diff when there's no new commit.
 - Merging asks for the target branch (preselected: the PR's base; another one retargets the PR) and the method: merge, squash (preselected) or rebase.
 
-PRs use the [GitHub CLI](https://cli.github.com) (`gh`); if it's missing or not logged in, the status line says so. In menus: `j`/`k` or the mouse to move, `Enter` or click to pick, `Esc` to close.
+PRs use the [GitHub CLI](https://cli.github.com) (`gh`); if it's missing, not logged in, or no remote is on GitHub, the PR actions are off and the status line says why. In menus: `j`/`k` or the mouse to move, `Enter` or click to pick, `Esc` to close.
 
 In the comment box: `Enter` saves, `Ctrl-J` adds a newline, `Esc` cancels.
 
