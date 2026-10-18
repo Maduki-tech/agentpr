@@ -10,6 +10,17 @@ go build -o ~/.local/bin/agentpr .
 
 `agentpr` must be on your `PATH`: Claude calls `agentpr reply` to answer Threads.
 
+### Open automatically next to Claude
+
+```sh
+agentpr install     # adds a Stop hook to ~/.claude/settings.json (backup in settings.json.bak)
+agentpr uninstall   # removes it
+```
+
+At the end of every Claude Code turn, `agentpr hook` runs. If Claude is in a herdr pane, its directory is a git repo, and the Changeset is not empty, agentpr opens in a split to the right of Claude, without taking focus. If an agentpr pane for that worktree is already open in the tab, nothing happens: it reloads live. Outside herdr, or with no changes, the hook does nothing. It never blocks Claude; errors go to `.git/agentpr/hook.log`.
+
+Set `AGENTPR_AUTO_OPEN=0` to turn it off without uninstalling.
+
 ## Usage
 
 Run it inside a git repo, ideally in a [herdr](https://herdr.dev) pane next to Claude:
