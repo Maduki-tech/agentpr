@@ -63,7 +63,7 @@ func openPane(repo *Repo) error {
 			return nil
 		}
 	}
-	base, err := repo.Base("")
+	base, _, err := repo.Base("")
 	if err != nil {
 		return err
 	}

@@ -27,13 +27,13 @@ Run it inside a git repo, ideally in a [herdr](https://herdr.dev) pane next to C
 
 ```sh
 agentpr                # review the current branch
-agentpr --base <ref>   # compare against another ref
+agentpr --base <ref>   # compare against another branch, e.g. origin/develop
 agentpr --theme catppuccin-latte
 ```
 
 Code is syntax-highlighted by file type, and the whole UI follows the theme. Themes: `catppuccin-mocha` (default), `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`, or any [chroma style](https://xyproto.github.io/splash/docs/) name. Set a default with `AGENTPR_THEME`; `T` cycles the Catppuccin flavors while running. Use a truecolor terminal for the intended colors.
 
-What gets reviewed (the Changeset) is everything that differs from the Base: committed, uncommitted, and new untracked files. The Base is the merge-base with `main`/`master` on a feature branch, or `HEAD` on `main` itself. After your first submitted Review, you only see what changed since then (`i` toggles the full Changeset).
+What gets reviewed (the Changeset) is everything that differs from the Base, like `git diff` against it: committed, uncommitted, and new untracked files. The Base is the merge-base with `main`/`master` on a feature branch (with `origin/main` when it is ahead of your local `main`). On `main` itself it's the upstream (`origin/main`), so unpushed commits show too; without an upstream, `HEAD`. To compare against another branch, local or remote, click `Base: … ▾` in the toolbar or press `b`; `--base` sets it at startup. The status line shows the active Base.
 
 ### The loop
 
@@ -41,6 +41,10 @@ What gets reviewed (the Changeset) is everything that differs from the Base: com
 2. Press `S`, then `r` (request changes). The Review is sent to the Claude pane working in this repo via herdr. If there are several, you pick one; if there are none, it's copied to the clipboard.
 3. Claude fixes the code and answers each Thread with `agentpr reply <thread-id> "..."`. Answers show up live.
 4. Resolve Threads with `R`, reply with `Enter`, repeat. When you're happy, `S` then `a` (approve) archives the Threads.
+
+### Toolbar
+
+The top row has a button for each action, so you can click instead of remembering keys: `‹ File` / `File ›`, `💬 Comment`, `✓ Resolve`, `Request changes`, `Approve`, `Base: … ▾` (compare against another branch), `/ Search`, `◐` theme, `? Keys` (the key list), the git action button with its `▾` menu, and `✕ Quit`. A click does exactly what the key does; greyed-out buttons can't do anything right now. On narrow terminals labels shrink to icons, then the least used buttons drop out.
 
 ### Keys
 
@@ -56,18 +60,20 @@ What gets reviewed (the Changeset) is everything that differs from the Base: com
 | `S` | Submit Review: `r` request changes, `a` approve |
 | `c` | Run the action button (see below) |
 | `C` | Git menu: Commit, Push, Create PR, Merge PR, View PR |
-| `i` | Toggle full Changeset / changes since last Review |
+| `b` | Compare against another branch (local or remote) |
 | `T` | Next theme |
+| `?` | Show / hide the key list |
 | `/`, `n` / `N` | Search |
 | `q` | Quit (pending comments are kept) |
-| Mouse | Wheel scrolls, click a file in the list to show only that file (click again or `Esc` for all), click selects a row, drag selects lines, click the selected row/lines to comment |
+| Mouse | Click toolbar buttons, wheel scrolls, click a file in the list to show only that file (click again or `Esc` for all), click selects a row, drag selects lines, click the selected row/lines to comment |
 
 ### Shipping
 
-When the Changeset looks good, ship it from the action button at the right of the status line (`c`, or click it; `▾` or `C` opens the menu with each step). Its label follows the branch: `Commit` (no remote), `Commit, push & create PR`, `Commit & push` once a PR exists, `Push & create PR` / `Create PR` for committed work, then `Merge PR`.
+When the Changeset looks good, ship it from the action button at the right of the toolbar (`c`, or click it; `▾` or `C` opens the menu with each step). Its label follows the branch: `Commit` (no remote), `Commit, push & create PR`, `Commit & push` once a PR exists, `Push & create PR` / `Create PR` for committed work, then `Merge PR`.
 
 - A commit stages everything the Changeset shows (tracked and untracked). On `main`/`master` you're asked for a new branch first, so a PR is possible; open Threads move with you.
-- Creating a PR pushes the branch, then asks for the base branch (preselected: the Base's branch) and the title (first line) and body, prefilled with the commit message.
+- The commit message is drafted by Claude: agentpr stages the changes (`git add -A`) and pipes `git diff --cached` (stat and diff, cut at 100KB) to `claude -p --model haiku`, then prefills the message box. Edit it or press `Enter`; `Ctrl-R` asks again. If `claude` is missing, fails, or takes over 60s, the box stays empty and the status line says why. Esc leaves the changes staged.
+- Creating a PR pushes the branch, then asks for the base branch (preselected: the Base's branch) and the title (first line) and body, prefilled with the commit message, or drafted by Claude from the branch's diff when there's no new commit.
 - Merging asks for the target branch (preselected: the PR's base; another one retargets the PR) and the method: merge, squash (preselected) or rebase.
 
 PRs use the [GitHub CLI](https://cli.github.com) (`gh`); if it's missing or not logged in, the status line says so. In menus: `j`/`k` or the mouse to move, `Enter` or click to pick, `Esc` to close.

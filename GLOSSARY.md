@@ -13,7 +13,7 @@ The human reading the diff and leaving comments.
 _Avoid_: User
 
 **Base**:
-The commit the Author's work is compared against: a branch's merge-base with the main branch, or `HEAD` when the Author works directly in the checkout.
+The commit the Author's work is compared against: a branch's merge-base with the main branch (or with whichever branch the Reviewer picks), or, on the main branch itself, its upstream (`HEAD` without one).
 
 **Changeset**:
 The Author's current changes on the branch, compared to the Base. Reviewed like a pull request, but it is not one: it has no lifecycle of its own and is simply whatever has changed right now.
@@ -32,10 +32,6 @@ _Avoid_: Note, annotation
 **Comment**:
 A single message inside a Thread.
 
-**Incremental diff**:
-The changes made since the Reviewer's last submitted Review.
-_Avoid_: Interdiff
-
 **Pending Comment**:
 A Comment the Reviewer has written but not yet sent; it becomes visible to the Author only when the Review is submitted.
 _Avoid_: Draft
@@ -47,4 +43,4 @@ A Thread whose original snippet can no longer be found in the Changeset; it stay
 A real GitHub pull request, opened from the branch with the Action button once the Changeset is ready to ship. Not the Changeset itself.
 
 **Action button**:
-The button at the right of the status line that ships the Changeset: its label and action follow the branch's state (commit, push, create PR, merge PR), and its menu offers each step on its own.
+The button at the right of the toolbar that ships the Changeset: its label and action follow the branch's state (commit, push, create PR, merge PR), and its menu offers each step on its own.

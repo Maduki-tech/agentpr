@@ -67,6 +67,8 @@ func setTheme(name string) bool {
 	stBtn = base.Bold(true).Foreground(c(bg)).Background(c(blue))
 	stBtnHov = stBtn.Background(c(mix(blue, fg, 0.35)))
 	stBtnOff = base.Foreground(c(dim)).Background(c(mix(bg, fg, 0.22)))
+	stTool = base.Background(c(mix(bg, fg, 0.22)))
+	stToolHov = stBtn
 	stMenu = base.Border(lipgloss.RoundedBorder()).BorderForeground(c(blue)).BorderBackground(c(bg))
 	return ok
 }
