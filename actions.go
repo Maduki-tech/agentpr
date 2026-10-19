@@ -80,12 +80,34 @@ func menuItems(s GitState) []item {
 }
 
 // picker is a dropdown below the button: the git menu, the branch picker, the merge method.
+// sel and off are positions in shown, the items matching the search query.
 type picker struct {
-	title string
-	items []item
-	sel   int
-	off   int // the first shown item; moves only to keep sel in view
-	pick  func(int)
+	title  string
+	items  []item
+	sel    int
+	off    int // the first shown position; moves only to keep sel in view
+	pick   func(int)
+	search bool // "/" is typing a query
+	query  string
+}
+
+// shown lists the indexes of the items whose label contains the query, ignoring case.
+func (p *picker) shown() []int {
+	var is []int
+	for i, it := range p.items {
+		if strings.Contains(strings.ToLower(it.label), strings.ToLower(p.query)) {
+			is = append(is, i)
+		}
+	}
+	return is
+}
+
+// head is the title line, with the query while searching.
+func (p *picker) head() string {
+	if p.search {
+		return " " + p.title + "  /" + p.query
+	}
+	return " " + p.title
 }
 
 type gitDone struct {
@@ -123,24 +145,49 @@ func (m *model) open(title string, items []item, sel int, pick func(int)) {
 	m.mode, m.menu, m.help = mMenu, &picker{title: title, items: items, sel: sel, pick: pick}, false
 }
 
+// choose picks the item at shown position i.
 func (m *model) choose(i int) {
-	if it := m.menu.items[i]; !it.on {
+	is := m.menu.shown()
+	if i >= len(is) {
+		return
+	}
+	if it := m.menu.items[is[i]]; !it.on {
 		m.msg = it.label + " isn't possible right now"
 		return
 	}
 	m.mode = mNormal
-	m.menu.pick(i)
+	m.menu.pick(is[i])
 }
 
 func (m *model) menuKey(s string) {
 	p := m.menu
+	is := p.shown()
+	if p.search {
+		switch r := []rune(p.query); {
+		case s == "esc": // leaves the search, keeping the highlighted item
+			if p.sel < len(is) {
+				p.sel = is[p.sel]
+			}
+			p.search, p.query = false, ""
+			return
+		case s == "backspace" && len(r) > 0:
+			p.query, p.sel = string(r[:len(r)-1]), 0
+			return
+		case len([]rune(s)) == 1:
+			p.query, p.sel = p.query+s, 0
+			return
+		}
+	}
+	n := max(1, len(is))
 	switch s {
 	case "j", "down", "tab":
-		p.sel = (p.sel + 1) % len(p.items)
+		p.sel = (p.sel + 1) % n
 	case "k", "up", "shift+tab":
-		p.sel = (p.sel - 1 + len(p.items)) % len(p.items)
+		p.sel = (p.sel - 1 + n) % n
 	case "enter":
 		m.choose(p.sel)
+	case "/":
+		p.search = true
 	case "esc", "q", "C":
 		m.mode = mNormal
 	}
@@ -430,9 +477,10 @@ func (m *model) gotPR(p prMsg) {
 // its left x, the screen row of its first shown item, the first shown item, and how many show.
 func (m *model) menuBox() (x, y, off, n int) {
 	p, vh := m.menu, m.viewH()
-	n = min(len(p.items), 10, max(1, vh-3))
-	p.off = max(0, min(p.off, p.sel, len(p.items)-n), p.sel-n+1)
-	w := lipgloss.Width(p.title) + 2
+	k := len(p.shown())
+	n = min(k, 10, max(1, vh-3))
+	p.off = max(0, min(p.off, p.sel, k-n), p.sel-n+1)
+	w := lipgloss.Width(p.head()) + 1
 	for _, it := range p.items {
 		w = max(w, lipgloss.Width(it.label)+2)
 	}
@@ -444,16 +492,17 @@ func (m *model) menuView() []string {
 	p := m.menu
 	x, _, off, n := m.menuBox()
 	w := m.w - x - 2
-	lines := []string{stCtx.Bold(true).Width(w).Render(" " + p.title)}
+	lines := []string{stCtx.Bold(true).Width(w).Render(ansi.Truncate(p.head(), w, "…"))}
+	is := p.shown()
 	for i := off; i < off+n; i++ {
 		st := stCtx
-		if !p.items[i].on {
+		if !p.items[is[i]].on {
 			st = stDone
 		}
 		if i == p.sel {
 			st = st.Reverse(true)
 		}
-		lines = append(lines, st.Width(w).Render(ansi.Truncate(" "+p.items[i].label, w, "…")))
+		lines = append(lines, st.Width(w).Render(ansi.Truncate(" "+p.items[is[i]].label, w, "…")))
 	}
 	return strings.Split(stMenu.Render(strings.Join(lines, "\n")), "\n")
 }

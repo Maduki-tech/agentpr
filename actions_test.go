@@ -249,6 +249,35 @@ func TestPickBase(t *testing.T) {
 	if !d.once || m.d.baseRef != "dev" || !strings.Contains(m.rows[0].Text, "vs dev") {
 		t.Fatalf("reloads against dev: once=%v ref=%q top=%q", d.once, m.d.baseRef, m.rows[0].Text)
 	}
+
+	// "/" filters the picker; enter compares against the highlighted match.
+	clickTool(m, "b")
+	key := func(s string) { m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}) }
+	key("/")
+	key("MA") // ignores case
+	if len(m.menu.shown()) != 1 || m.menu.sel != 0 || !strings.Contains(m.menuView()[1], "/MA") {
+		t.Fatalf("filters: %v %q", m.menu.shown(), m.menuView()[1])
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.menu.query != "M" {
+		t.Fatalf("backspace: %q", m.menu.query)
+	}
+	key("a")
+	m.key(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != mMenu || m.menu.search || m.menu.items[m.menu.sel].label != "main" {
+		t.Fatalf("esc clears the filter and keeps main: mode=%d %+v", m.mode, m.menu)
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != mNormal {
+		t.Fatalf("second esc closes: mode=%d", m.mode)
+	}
+	clickTool(m, "b")
+	key("/")
+	key("ma")
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.baseFlag != "main" {
+		t.Fatalf("picks main: %q", m.baseFlag)
+	}
 }
 
 // testWorktree is testRepo with a bare origin and a linked worktree on the pushed branch "feat".
