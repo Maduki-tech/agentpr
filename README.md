@@ -107,7 +107,7 @@ agentpr --theme catppuccin-latte       # or any chroma style name
 
 ## How it works
 
-What gets reviewed, the Changeset, is everything that differs from the Base, like `git diff` against it: committed, uncommitted, and new untracked files. On a feature branch the Base is the merge-base with `main` (or `master`; `origin/main` when it's ahead of your local `main`). On `main` itself it's the upstream, so unpushed commits show; without an upstream, `HEAD`. The status line shows the active Base, and agentpr reloads when anything changes.
+What gets reviewed, the Changeset, is everything that differs from the Base, like `git diff` against it: committed, uncommitted, and new untracked files. On a feature branch the Base is the merge-base with `main` (or `master`; `origin/main` when it's ahead of your local `main`). To use another branch, run `git config agentpr.base development` (per repo, or `--global`); `--base` still wins. On `main` (or that branch) itself it's the upstream, so unpushed commits show; without an upstream, `HEAD`. The status line shows the active Base, and agentpr reloads when anything changes.
 
 Threads are stored per branch in `.git/agentpr/`. A Thread whose code is gone is shown as *outdated*, with the snippet it was written on.
 

@@ -70,16 +70,25 @@ func (r *Repo) Base(ref string) (string, string, error) {
 	return mb, ref, nil
 }
 
-// defaultBase: on main/master its upstream, so unpushed commits show; on a feature branch
-// main/master, or origin's when that is ahead; else HEAD.
+// trunks lists the branches that count as the default: git config agentpr.base, then main and master.
+func (r *Repo) trunks() []string {
+	if b, err := git(r.Root, nil, "config", "--get", "agentpr.base"); err == nil && b != "" {
+		return []string{b, "main", "master"}
+	}
+	return []string{"main", "master"}
+}
+
+// defaultBase: on a trunk branch its upstream, so unpushed commits show; on a feature branch
+// the first trunk that exists, or origin's when that is ahead; else HEAD.
 func (r *Repo) defaultBase() string {
-	if r.Branch == "main" || r.Branch == "master" {
+	trunks := r.trunks()
+	if slices.Contains(trunks, r.Branch) {
 		if u, err := git(r.Root, nil, "rev-parse", "--abbrev-ref", "--verify", "-q", "@{u}"); err == nil {
 			return u
 		}
 		return "HEAD"
 	}
-	for _, b := range []string{"main", "master"} {
+	for _, b := range trunks {
 		local, lerr := git(r.Root, nil, "rev-parse", "--verify", "-q", b)
 		remote, rerr := git(r.Root, nil, "rev-parse", "--verify", "-q", "origin/"+b)
 		switch {
@@ -124,7 +133,7 @@ func (r *Repo) Snapshot() (string, error) {
 // GitState is what the action button needs to know about the branch; PR comes from gh separately.
 type GitState struct {
 	Branch        string
-	Default       bool // on main/master
+	Default       bool // on main/master or agentpr.base
 	Dirty         bool // the working tree differs from HEAD
 	Remote        bool
 	Ahead, Behind int // commits on no remote yet / upstream commits missing here
@@ -134,7 +143,7 @@ type GitState struct {
 }
 
 func (r *Repo) State(base, tree string) GitState {
-	s := GitState{Branch: r.Branch, Default: r.Branch == "main" || r.Branch == "master"}
+	s := GitState{Branch: r.Branch, Default: slices.Contains(r.trunks(), r.Branch)}
 	head, err := git(r.Root, nil, "rev-parse", "-q", "--verify", "HEAD^{tree}")
 	if err != nil {
 		head = emptyTree
