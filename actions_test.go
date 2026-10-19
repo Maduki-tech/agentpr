@@ -388,3 +388,140 @@ func TestRemoveAfterMerge(t *testing.T) {
 		}
 	}
 }
+
+func TestGotPR(t *testing.T) {
+	m := newModel(testRepo(t), "")
+	pr := &PR{Number: 2}
+	m.gotPR(prMsg{"other", pr, nil}) // a stale answer for another branch
+	if m.pr != nil {
+		t.Fatalf("stale: %+v", m.pr)
+	}
+	m.gotPR(prMsg{"main", pr, nil})
+	if m.pr != pr || m.ghErr != "" || m.noPR != "" {
+		t.Fatalf("ok: %+v %q %q", m.pr, m.ghErr, m.noPR)
+	}
+	m.gotPR(prMsg{"main", nil, noPR("gh not found")})
+	if m.pr != nil || m.noPR != "gh not found" || m.msg != "gh not found" {
+		t.Fatalf("noPR: pr=%v noPR=%q msg=%q", m.pr, m.noPR, m.msg)
+	}
+	m.msg = ""
+	m.gotPR(prMsg{"main", nil, noPR("gh not found")}) // same error again: no new message
+	if m.msg != "" {
+		t.Fatalf("repeated: %q", m.msg)
+	}
+	m.gotPR(prMsg{"main", nil, errors.New("network")}) // PRs stay available
+	if m.noPR != "" || m.ghErr != "network" || m.msg != "network" {
+		t.Fatalf("network: noPR=%q ghErr=%q msg=%q", m.noPR, m.ghErr, m.msg)
+	}
+}
+
+func TestFetchPR(t *testing.T) {
+	r := testRepo(t)
+	r.Branch = "HEAD"
+	if newModel(r, "").fetchPR() != nil {
+		t.Fatal("detached HEAD fetches a PR")
+	}
+	r.Branch = "feat"
+	fakeTool(t, "gh", `echo '{"number":8,"state":"OPEN"}'`)
+	p, ok := newModel(r, "").fetchPR()().(prMsg)
+	if !ok || p.branch != "feat" || p.err != nil || p.pr.Number != 8 {
+		t.Fatalf("got %+v", p)
+	}
+}
+
+func TestRunActions(t *testing.T) {
+	_, wt, origin := testWorktree(t)
+	m := newModel(wt, "")
+	m.w, m.h, m.d.state = 100, 20, &State{}
+
+	m.busy = "pushing…"
+	m.run(aPush)
+	if m.msg != "pushing… still running" || m.cmd != nil {
+		t.Fatalf("busy: %q", m.msg)
+	}
+	m.busy = ""
+
+	git(wt.Root, nil, "commit", "-q", "--allow-empty", "-m", "more")
+	m.run(aPush)
+	if d := m.cmd().(gitDone); d.msg != "pushed feat" || d.err != nil {
+		t.Fatalf("push: %+v", d)
+	}
+	if remote, _ := git(origin, nil, "rev-parse", "feat"); remote == "" {
+		t.Fatal("not pushed")
+	}
+
+	log := fakeTool(t, "gh", "")
+	m.pr = &PR{Number: 3, URL: "https://x/pull/3"}
+	m.busy, m.cmd = "", nil
+	m.run(aViewPR)
+	if d := m.cmd().(gitDone); d.msg != "https://x/pull/3" || d.err != nil || calls(log)[0] != "pr view --web feat" {
+		t.Fatalf("view: %+v %q", d, calls(log))
+	}
+}
+
+func TestCreatePRFlow(t *testing.T) {
+	_, wt, _ := testWorktree(t)
+	os.WriteFile(filepath.Join(wt.Root, "new.txt"), []byte("hi\n"), 0o644)
+	log := fakeTool(t, "gh", "echo https://x/pull/9")
+	var in string
+	defer func(f func(string, string, string) (string, error)) { runClaude = f }(runClaude)
+	runClaude = func(dir, prompt, input string) (string, error) {
+		in = input
+		return "drafted title\n\ndrafted body", nil
+	}
+	pickMain := func(m *model) {
+		t.Helper()
+		if m.mode != mMenu {
+			t.Fatalf("no base picker: mode=%d msg=%q", m.mode, m.msg)
+		}
+		i := slices.IndexFunc(m.menu.items, func(i item) bool { return i.label == "main" })
+		m.menu.pick(i)
+	}
+
+	// From the PR action: Claude drafts the title and body from the Changeset.
+	m := newModel(wt, "")
+	m.w, m.h, m.d.state, m.d.base = 100, 20, &State{}, "main"
+	m.run(aPR)
+	pickMain(m)
+	m.Update(m.cmd())
+	if m.input.Value() != "drafted title\n\ndrafted body" {
+		t.Fatalf("draft: %q (claude saw %q)", m.input.Value(), in)
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.busy != "creating PR…" {
+		t.Fatalf("busy: %q", m.busy)
+	}
+	if d := m.cmd().(gitDone); d.msg != "opened https://x/pull/9" || d.err != nil {
+		t.Fatalf("created: %+v", d)
+	}
+	if got := calls(log)[0]; got != "pr create --base main --head feat --title drafted title --body drafted body" {
+		t.Fatalf("gh: %q", got)
+	}
+
+	// From commit & PR: the commit message prefills the box and is committed first.
+	m = newModel(wt, "")
+	m.w, m.h, m.d.state = 100, 20, &State{}
+	m.createPR("", "add new.txt")
+	pickMain(m)
+	if m.input.Value() != "add new.txt" {
+		t.Fatalf("prefill: %q", m.input.Value())
+	}
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	if d := m.cmd().(gitDone); d.err != nil || !strings.HasPrefix(d.msg, "opened ") {
+		t.Fatalf("created: %+v", d)
+	}
+	if out, _ := git(wt.Root, nil, "log", "-1", "--format=%s"); out != "add new.txt" {
+		t.Fatalf("commit: %q", out)
+	}
+
+	// A commit failure stops before the PR.
+	m = newModel(wt, "")
+	m.w, m.h, m.d.state = 100, 20, &State{}
+	m.createPR("", "nothing to commit")
+	pickMain(m)
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	n := len(calls(log))
+	if d := m.cmd().(gitDone); d.err == nil || len(calls(log)) != n {
+		t.Fatalf("empty commit: %+v", d)
+	}
+}

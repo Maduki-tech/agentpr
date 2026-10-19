@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -136,5 +139,161 @@ Binary files /dev/null and b/img.png differ
 		if len(f.Lines) > 0 && f.Lines[0].Kind != KHunk {
 			t.Errorf("%s: meta lines must fold into the header, got %+v", f.Path, f.Lines[0])
 		}
+	}
+}
+
+func TestOpenRepo(t *testing.T) {
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(t.TempDir()))
+	main, wt, _ := testWorktree(t)
+	os.MkdirAll(filepath.Join(main.Root, "sub"), 0o755)
+	r, err := openRepo(filepath.Join(main.Root, "sub"))
+	if err != nil || r.Root != main.Root || r.Branch != "main" || r.GitDir != main.GitDir {
+		t.Fatalf("main: %+v %v", r, err)
+	}
+	if r, err := openRepo(wt.Root); err != nil || r.Branch != "feat" || r.GitDir != main.GitDir {
+		t.Fatalf("worktree: %+v %v", r, err)
+	}
+	git(main.Root, nil, "switch", "-q", "--detach")
+	if r, _ := openRepo(main.Root); r.Branch != "HEAD" {
+		t.Fatalf("detached: %q", r.Branch)
+	}
+	if _, err := openRepo(t.TempDir()); err == nil {
+		t.Fatal("non-repo accepted")
+	}
+}
+
+func TestBaseEdges(t *testing.T) {
+	// No commits yet.
+	empty := t.TempDir()
+	git(empty, nil, "init", "-q", "-b", "main")
+	e := &Repo{Root: empty, Branch: "main"}
+	if b, ref, err := e.Base(""); err != nil || b != emptyTree || ref != "empty tree" {
+		t.Fatalf("empty: %q %q %v", b, ref, err)
+	}
+	if _, _, err := e.Base("nope"); err == nil {
+		t.Fatal("empty repo, invalid ref accepted")
+	}
+
+	r := testRepo(t)
+	r.Branch = "feat"
+	git(r.Root, nil, "switch", "-q", "feat")
+	head, _ := git(r.Root, nil, "rev-parse", "HEAD")
+	if b, ref, err := r.Base("dev"); err != nil || b != head || ref != "dev" {
+		t.Fatalf("ref: %q %q %v", b, ref, err)
+	}
+	if _, ref, err := r.Base(""); err != nil || ref != "main" {
+		t.Fatalf("default: %q %v", ref, err)
+	}
+	if _, _, err := r.Base("nope"); err == nil {
+		t.Fatal("invalid ref accepted")
+	}
+
+	// A root commit of its own shares no history.
+	orphan, _ := git(r.Root, nil, "commit-tree", "-m", "x", emptyTree)
+	git(r.Root, nil, "branch", "orphan", orphan)
+	if _, _, err := r.Base("orphan"); err == nil || !strings.Contains(err.Error(), "shares no history") {
+		t.Fatalf("orphan: %v", err)
+	}
+}
+
+func TestPush(t *testing.T) {
+	_, wt, origin := testWorktree(t)
+	git(wt.Root, nil, "commit", "-q", "--allow-empty", "-m", "more")
+	if err := wt.Push(); err != nil {
+		t.Fatal(err)
+	}
+	local, _ := git(wt.Root, nil, "rev-parse", "HEAD")
+	if remote, _ := git(origin, nil, "rev-parse", "feat"); remote != local {
+		t.Fatalf("origin has %q, want %q", remote, local)
+	}
+	git(wt.Root, nil, "remote", "set-url", "origin", filepath.Join(origin, "gone"))
+	if err := wt.Push(); err == nil {
+		t.Fatal("push to a missing remote succeeded")
+	}
+}
+
+func TestGh(t *testing.T) {
+	r := testRepo(t)
+	noTools(t)
+	if _, err := gh(r.Root, "pr", "view"); !errors.As(err, new(noPR)) {
+		t.Fatalf("missing gh: %v", err)
+	}
+	log := fakeTool(t, "gh", `echo "  out  "; [ "$GH_PROMPT_DISABLED" = 1 ]`)
+	if out, err := gh(r.Root, "pr", "view"); err != nil || out != "out" {
+		t.Fatalf("ok: %q %v", out, err)
+	}
+	if calls(log)[0] != "pr view" {
+		t.Fatalf("calls: %q", calls(log))
+	}
+	fakeTool(t, "gh", "echo 'please run: gh auth login' >&2; exit 4")
+	if _, err := gh(r.Root, "pr", "view"); !errors.As(err, new(noPR)) {
+		t.Fatalf("logged out: %v", err)
+	}
+	fakeTool(t, "gh", "echo oops >&2; exit 1")
+	if _, err := gh(r.Root, "pr", "view"); err == nil || errors.As(err, new(noPR)) || err.Error() != "gh pr view: oops" {
+		t.Fatalf("other failure: %v", err)
+	}
+}
+
+func TestRepoPR(t *testing.T) {
+	r := testRepo(t)
+	r.Branch = "feat"
+	log := fakeTool(t, "gh", `echo '{"number":4,"url":"https://x/pull/4","state":"OPEN","baseRefName":"main"}'`)
+	pr, err := r.PR()
+	if err != nil || *pr != (PR{4, "https://x/pull/4", "OPEN", "main"}) {
+		t.Fatalf("got %+v %v", pr, err)
+	}
+	if got := calls(log)[0]; got != "pr view feat --json number,url,state,baseRefName" {
+		t.Fatalf("args: %q", got)
+	}
+	fakeTool(t, "gh", `echo 'no pull requests found for branch "feat"' >&2; exit 1`)
+	if pr, err := r.PR(); pr != nil || err != nil {
+		t.Fatalf("none: %+v %v", pr, err)
+	}
+	fakeTool(t, "gh", "echo network >&2; exit 1")
+	if _, err := r.PR(); err == nil {
+		t.Fatal("failure swallowed")
+	}
+	fakeTool(t, "gh", "echo not json")
+	if _, err := r.PR(); err == nil {
+		t.Fatal("bad json accepted")
+	}
+}
+
+func TestCreatePR(t *testing.T) {
+	_, wt, origin := testWorktree(t)
+	log := fakeTool(t, "gh", `echo "Creating pull request"; echo https://x/pull/5`)
+	url, err := wt.CreatePR("main", "title", "body")
+	if err != nil || url != "https://x/pull/5" {
+		t.Fatalf("got %q %v", url, err)
+	}
+	if got := calls(log)[0]; got != "pr create --base main --head feat --title title --body body" {
+		t.Fatalf("args: %q", got)
+	}
+	git(wt.Root, nil, "remote", "set-url", "origin", filepath.Join(origin, "gone"))
+	if _, err := wt.CreatePR("main", "t", "b"); err == nil {
+		t.Fatal("push failure swallowed")
+	}
+}
+
+func TestMergePR(t *testing.T) {
+	r := testRepo(t)
+	log := fakeTool(t, "gh", "")
+	if err := r.MergePR(PR{Number: 3, Base: "main"}, "main", "squash"); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls(log); len(got) != 1 || got[0] != "pr merge 3 --squash" {
+		t.Fatalf("same base: %q", got)
+	}
+	log = fakeTool(t, "gh", "")
+	if err := r.MergePR(PR{Number: 3, Base: "main"}, "dev", "merge"); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls(log); len(got) != 2 || got[0] != "pr edit 3 --base dev" || got[1] != "pr merge 3 --merge" {
+		t.Fatalf("retarget: %q", got)
+	}
+	log = fakeTool(t, "gh", `[ "$2" = edit ] && { echo denied >&2; exit 1; }`)
+	if err := r.MergePR(PR{Number: 3, Base: "main"}, "dev", "merge"); err == nil || hasCall(log, "pr merge") {
+		t.Fatalf("retarget failure: %v %q", err, calls(log))
 	}
 }

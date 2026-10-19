@@ -37,6 +37,7 @@ func run(base, theme string, args []string) error {
 	if len(args) == 1 {
 		switch args[0] {
 		case "hook":
+			time.AfterFunc(2*time.Second, func() { os.Exit(0) }) // never hold up Claude
 			runHook(os.Stdin)
 			return nil
 		case "install", "uninstall":

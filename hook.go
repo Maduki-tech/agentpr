@@ -20,7 +20,6 @@ const (
 // runHook is the Claude Code Stop hook: open agentpr in a herdr split next to Claude
 // when the turn changed files and left a Changeset. It never fails Claude: errors only go to hook.log.
 func runHook(stdin io.Reader) {
-	time.AfterFunc(2*time.Second, func() { os.Exit(0) })
 	if os.Getenv("AGENTPR_AUTO_OPEN") == "0" || os.Getenv("HERDR_ENV") != "1" || os.Getenv("HERDR_PANE_ID") == "" {
 		return
 	}
