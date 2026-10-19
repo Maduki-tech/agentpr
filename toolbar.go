@@ -134,7 +134,7 @@ var helpKeys = [][2]string{
 	{"R", "resolve / unresolve"},
 	{"S r  S a", "request changes / approve"},
 	{"c  C", "git action / git menu"},
-	{"b", "compare against another branch"},
+	{"b", "compare against another branch (/ filters)"},
 	{"T", "next theme"},
 	{"/  n N", "search, next / previous"},
 	{"esc", "all files; close this"},

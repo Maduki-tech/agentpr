@@ -77,7 +77,7 @@ agentpr
 | `S` | Submit the Review: `r` request changes, `a` approve |
 | `c` | Run the git action button |
 | `C` | Git menu: Commit, Push, Create PR, Merge PR, View PR |
-| `b` | Compare against another branch (local or remote) |
+| `b` | Compare against another branch (local or remote); `/` filters the list |
 | `T` | Next theme |
 | `/`, `n` / `N` | Search, next / previous match |
 | `?` | Show / hide the key list |
