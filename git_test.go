@@ -81,6 +81,20 @@ func TestBase(t *testing.T) {
 	run("update-ref", "refs/heads/main", init)
 	base("", "origin/main")
 	base("dev", "dev")
+
+	// agentpr.base wins over main; a missing branch falls back to main detection.
+	run("config", "agentpr.base", "development")
+	base("", "origin/main")
+	run("branch", "development", init)
+	base("", "development")
+	run("update-ref", "refs/remotes/origin/development", "origin/main")
+	base("", "origin/development")
+	base("main", "main") // --base still overrides
+	run("switch", "-q", "development")
+	r.Branch = "development"
+	if !r.State("HEAD", "").Default {
+		t.Fatal("the configured base branch counts as Default")
+	}
 }
 
 func TestFileStatus(t *testing.T) {
