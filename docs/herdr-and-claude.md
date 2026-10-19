@@ -17,7 +17,8 @@ At the end of a turn, `agentpr hook`:
 2. Reads the session's working directory from the hook input and does nothing if it's not a git repo.
 3. Does nothing if an `agentpr` pane for that worktree is already open in the tab: that pane reloads on its own.
 4. Does nothing if the Changeset is empty.
-5. Otherwise splits Claude's pane to the right without taking focus, labels the new pane `agentpr` and runs `exec agentpr` in it, so the pane closes when you quit.
+5. Does nothing if the turn changed no files: the working tree is snapshotted (as for the Changeset, so edits made through Bash count) and compared with the snapshot recorded by the previous hook run, kept in `.git/agentpr/<branch>.hook-tree`. The first run has nothing to compare with and counts as changed. Changes you make by hand between turns count as well.
+6. Otherwise splits Claude's pane to the right without taking focus, labels the new pane `agentpr` and runs `exec agentpr` in it, so the pane closes when you quit.
 
 The hook never blocks or fails Claude: it exits after at most 2 seconds, and errors go to `.git/agentpr/hook.log`.
 

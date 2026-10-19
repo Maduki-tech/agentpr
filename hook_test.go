@@ -44,3 +44,15 @@ func TestInstallUninstall(t *testing.T) {
 		t.Fatalf("uninstall: %s", b)
 	}
 }
+
+func TestTreeChanged(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "agentpr", "main.hook-tree")
+	for i, c := range []struct {
+		tree string
+		want bool
+	}{{"a", true}, {"a", false}, {"b", true}, {"b", false}, {"a", true}} {
+		if got := treeChanged(p, c.tree); got != c.want {
+			t.Fatalf("step %d (%s): got %v, want %v", i, c.tree, got, c.want)
+		}
+	}
+}
