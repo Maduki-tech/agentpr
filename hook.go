@@ -18,7 +18,7 @@ const (
 )
 
 // runHook is the Claude Code Stop hook: open agentpr in a herdr split next to Claude
-// when the turn left a Changeset. It never fails Claude: errors only go to hook.log.
+// when the turn changed files and left a Changeset. It never fails Claude: errors only go to hook.log.
 func runHook(stdin io.Reader) {
 	time.AfterFunc(2*time.Second, func() { os.Exit(0) })
 	if os.Getenv("AGENTPR_AUTO_OPEN") == "0" || os.Getenv("HERDR_ENV") != "1" || os.Getenv("HERDR_PANE_ID") == "" {
@@ -43,7 +43,23 @@ func runHook(stdin io.Reader) {
 	}
 }
 
+// treeChanged records tree in path and reports whether it differs from the one recorded
+// last time. With no record yet it says true, so the first turn behaves like the old hook.
+// ponytail: edits the user makes by hand between turns count too; a UserPromptSubmit hook would pin the turn start.
+func treeChanged(path, tree string) bool {
+	prev, _ := os.ReadFile(path)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(tree), 0o644)
+	return len(prev) == 0 || string(prev) != tree
+}
+
 func openPane(repo *Repo) error {
+	tree, err := repo.Snapshot()
+	if err != nil {
+		return err
+	}
+	// Recorded on every run, even when a pane is open, so the next turn compares against this one.
+	edited := treeChanged(strings.TrimSuffix(repo.StatePath(), ".json")+".hook-tree", tree)
 	var list struct {
 		Result struct {
 			Panes []struct {
@@ -67,12 +83,11 @@ func openPane(repo *Repo) error {
 	if err != nil {
 		return err
 	}
-	tree, err := repo.Snapshot()
-	if err != nil {
-		return err
-	}
 	if baseTree, _ := git(repo.Root, nil, "rev-parse", base+"^{tree}"); baseTree == tree {
 		return nil // empty Changeset
+	}
+	if !edited {
+		return nil // the turn didn't touch the working tree
 	}
 	var split struct {
 		Result struct {
