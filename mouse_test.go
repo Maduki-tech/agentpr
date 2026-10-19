@@ -135,3 +135,33 @@ func TestGap(t *testing.T) {
 		t.Fatalf("header: %q", h)
 	}
 }
+
+// Scrolling the picker with keys past its window, then moving the mouse, only highlights the row under it.
+func TestMenuHoverKeepsScroll(t *testing.T) {
+	m := newModel(nil, "")
+	m.w, m.h, m.d.state = 100, 30, &State{}
+	var items []item
+	for i := range 20 {
+		items = append(items, item{label: string(rune('a' + i)), on: true})
+	}
+	m.open("Compare against", items, 0, func(int) {})
+	for range 15 {
+		m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	}
+	x, y, off, _ := m.menuBox()
+	if m.menu.sel != 15 || off != 6 {
+		t.Fatalf("keys scroll: sel=%d off=%d", m.menu.sel, off)
+	}
+	for range 3 {
+		m.mouse(tea.MouseMsg{X: x + 2, Y: y + 2, Action: tea.MouseActionMotion})
+		if _, _, off, _ = m.menuBox(); m.menu.sel != 8 || off != 6 {
+			t.Fatalf("hover jumps: sel=%d off=%d", m.menu.sel, off)
+		}
+	}
+	m.mouse(tea.MouseMsg{X: x + 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	m.mouse(tea.MouseMsg{X: x + 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	m.mouse(tea.MouseMsg{X: x + 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	if _, _, off, _ = m.menuBox(); m.menu.sel != 5 || off != 5 {
+		t.Fatalf("wheel scrolls: sel=%d off=%d", m.menu.sel, off)
+	}
+}

@@ -84,6 +84,7 @@ type picker struct {
 	title string
 	items []item
 	sel   int
+	off   int // the first shown item; moves only to keep sel in view
 	pick  func(int)
 }
 
@@ -119,7 +120,7 @@ func (m *model) gitMenu() {
 }
 
 func (m *model) open(title string, items []item, sel int, pick func(int)) {
-	m.mode, m.menu, m.help = mMenu, &picker{title, items, sel, pick}, false
+	m.mode, m.menu, m.help = mMenu, &picker{title: title, items: items, sel: sel, pick: pick}, false
 }
 
 func (m *model) choose(i int) {
@@ -430,13 +431,13 @@ func (m *model) gotPR(p prMsg) {
 func (m *model) menuBox() (x, y, off, n int) {
 	p, vh := m.menu, m.viewH()
 	n = min(len(p.items), 10, max(1, vh-3))
-	off = max(0, p.sel-n+1)
+	p.off = max(0, min(p.off, p.sel, len(p.items)-n), p.sel-n+1)
 	w := lipgloss.Width(p.title) + 2
 	for _, it := range p.items {
 		w = max(w, lipgloss.Width(it.label)+2)
 	}
 	w = min(max(w, 20), m.w/2) + 2 // + border
-	return m.w - w, 3, off, n      // below the toolbar, the top border and the title
+	return m.w - w, 3, p.off, n    // below the toolbar, the top border and the title
 }
 
 func (m *model) menuView() []string {
