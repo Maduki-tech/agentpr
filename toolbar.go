@@ -126,35 +126,62 @@ func (m *model) toolClick(x int) {
 	}
 }
 
+// helpKeys: an entry with no description is a section heading.
 var helpKeys = [][2]string{
+	{"Navigate", ""},
 	{"j k  ^d ^u  gg G", "move"},
 	{"]c [c  ]f [f  ]t [t", "next / previous hunk, file, Thread"},
+	{"/  n N", "search, next / previous"},
+	{"esc", "all files; close this"},
+	{"Review", ""},
 	{"v V", "select lines"},
 	{"enter", "comment; reply on a Thread"},
 	{"R", "resolve / unresolve"},
 	{"S r  S a", "request changes / approve"},
+	{"Git", ""},
 	{"c  C", "git action / git menu"},
 	{"b", "compare against another branch (/ filters)"},
+	{"View", ""},
 	{"T", "next theme"},
-	{"/  n N", "search, next / previous"},
-	{"esc", "all files; close this"},
 	{"?", "this list"},
 	{"q", "quit"},
 }
 
-// helpView is the key list box, drawn like the git menu.
-func (m *model) helpView() []string {
-	lines := []string{stCtx.Bold(true).Render(" Keys")}
-	for _, k := range helpKeys {
-		lines = append(lines, stCtx.Render(fmt.Sprintf(" %-20s %s ", k[0], k[1])))
-	}
+// helpBox is the centred key dialog and its top left corner on screen; nil if the screen is too small.
+func (m *model) helpBox() (box []string, x, y int) {
 	w := 0
-	for _, l := range lines {
+	for _, k := range helpKeys {
+		w = max(w, len(k[0]))
+	}
+	kw := min(w, 20)
+	content := []string{stTop.Render("Keyboard shortcuts"), ""}
+	for _, k := range helpKeys {
+		switch {
+		case k[1] == "" && len(content) > 2:
+			content = append(content, "", stTop.Render(k[0]))
+		case k[1] == "":
+			content = append(content, stTop.Render(k[0]))
+		default:
+			content = append(content, stCurFile.Render(fmt.Sprintf("%-*s", kw, k[0]))+"  "+stCtx.Render(k[1]))
+		}
+	}
+	// 2 for the border, 2 for the padding on each side
+	iw, ih := m.w-4-2, m.viewH()-2-2
+	if iw < 1 || ih < 1 {
+		return nil, 0, 0
+	}
+	content = append(content[:max(0, min(len(content), ih-2))], "", stDone.Render("esc or ? to close")) // the hint always stays
+	content = content[max(0, len(content)-ih):]
+	w = 0
+	for _, l := range content {
 		w = max(w, lipgloss.Width(l))
 	}
-	w = min(w, m.w-2)
-	for i, l := range lines {
-		lines[i] = stCtx.Width(w).Render(ansi.Truncate(l, w, "…"))
+	w = min(w, iw)
+	for i, l := range content {
+		content[i] = stCtx.Width(w).Render(ansi.Truncate(l, w, "…"))
 	}
-	return strings.Split(stMenu.Render(strings.Join(lines, "\n")), "\n")
+	box = strings.Split(stMenu.Padding(1, 2).Render(strings.Join(content, "\n")), "\n")
+	x = (m.w - lipgloss.Width(box[0])) / 2
+	y = 1 + (m.viewH()-len(box))/2 // below the toolbar
+	return box, x, y
 }

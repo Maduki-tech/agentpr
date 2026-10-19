@@ -220,6 +220,15 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	}
+	if m.help { // a dialog: only closing keys do anything
+		switch s {
+		case "esc", "?", "q":
+			m.help = false
+		case "ctrl+c":
+			return tea.Quit
+		}
+		return nil
+	}
 	switch m.mode {
 	case mInput, mSearch, mGit:
 		switch s {
@@ -312,11 +321,11 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 			m.mode, m.anchor = mVisual, m.cur
 		}
 	case "esc":
-		if m.mode == mNormal && m.focus != "" && !m.help {
+		if m.mode == mNormal && m.focus != "" {
 			m.focus = ""
 			m.rebuild()
 		}
-		m.mode, m.help = mNormal, false
+		m.mode = mNormal
 	case "enter":
 		m.enter()
 	case "R":
@@ -359,6 +368,14 @@ func (m *model) mouse(e tea.MouseMsg) {
 	}
 	if m.mode == mMenu {
 		m.menuMouse(e)
+		return
+	}
+	if m.help {
+		box, x, y := m.helpBox()
+		in := box != nil && e.X >= x && e.X < x+lipgloss.Width(box[0]) && e.Y >= y && e.Y < y+len(box)
+		if e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft && !in {
+			m.help = false
+		}
 		return
 	}
 	switch e.Button {
@@ -815,7 +832,9 @@ func (m *model) View() string {
 	if m.mode == mMenu {
 		overlay(lines, m.menuView())
 	} else if m.help {
-		overlay(lines, m.helpView())
+		if box, x, y := m.helpBox(); box != nil {
+			overlayAt(lines, box, x, y-1)
+		}
 	}
 	if m.typing() {
 		lines = append(lines, stCtx.Width(m.w).Render(m.input.View()))
