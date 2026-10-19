@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // clickTool draws the toolbar and clicks the button that presses key; false if it isn't shown.
@@ -22,7 +23,7 @@ func clickTool(m *model, key string) bool {
 
 func toolModel() *model {
 	m := newModel(&Repo{Branch: "f"}, "")
-	m.w, m.h, m.d.state, m.d.base, m.d.baseRef = 120, 20, &State{}, "abc", "main"
+	m.w, m.h, m.d.state, m.d.base, m.d.baseRef = 120, 30, &State{}, "abc", "main"
 	m.d.files = []File{{Path: "a", Lines: []Line{{Kind: KAdd, New: 1, Text: "+x"}}}, {Path: "b", Lines: []Line{{Kind: KAdd, New: 1, Text: "+y"}}}}
 	m.build()
 	return m
@@ -94,6 +95,48 @@ func TestToolbarFits(t *testing.T) {
 			if lipgloss.Width(l) != w {
 				t.Errorf("width %d: line %d is %d wide", w, i, lipgloss.Width(l))
 			}
+		}
+	}
+}
+
+func TestHelpDialog(t *testing.T) {
+	m := toolModel()
+	press(m, "?")
+	box, x, y := m.helpBox()
+	if box == nil {
+		t.Fatal("no box")
+	}
+	bw := lipgloss.Width(box[0])
+	if x != (m.w-bw)/2 || y != 1+(m.viewH()-len(box))/2 {
+		t.Fatalf("not centred: x=%d y=%d box=%dx%d", x, y, bw, len(box))
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Keyboard shortcuts") || !strings.Contains(v, "esc or ? to close") {
+		t.Fatal("title or hint missing")
+	}
+	for _, k := range []string{"q", "esc", "?"} {
+		press(m, "?")
+		if press(m, k); m.help {
+			t.Fatalf("%q does not close", k)
+		}
+	}
+	// Clicking inside keeps it open, outside closes it; the toolbar is not clicked through.
+	press(m, "?")
+	m.mouse(tea.MouseMsg{X: x + 2, Y: y + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if !m.help {
+		t.Fatal("click inside closed it")
+	}
+	m.mouse(tea.MouseMsg{X: 0, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.help {
+		t.Fatal("click outside kept it")
+	}
+	// Tiny terminals: no panic, still closable.
+	for _, sz := range [][2]int{{20, 8}, {5, 3}, {1, 1}} {
+		m.w, m.h = sz[0], sz[1]
+		press(m, "?")
+		m.View()
+		press(m, "q")
+		if m.help {
+			t.Fatalf("%v: q did not close", sz)
 		}
 	}
 }

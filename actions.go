@@ -509,11 +509,18 @@ func (m *model) menuView() []string {
 
 // overlay draws box over the top right of the diff pane lines.
 func overlay(lines, box []string) {
-	for y, l := range box {
-		if y < len(lines) {
-			x := ansi.StringWidth(lines[y]) - ansi.StringWidth(l)
-			s := ansi.Truncate(lines[y], x, "")
-			lines[y] = s + "\x1b[0m" + strings.Repeat(" ", max(0, x-ansi.StringWidth(s))) + l
+	if len(box) > 0 && len(lines) > 0 {
+		overlayAt(lines, box, ansi.StringWidth(lines[0])-ansi.StringWidth(box[0]), 0)
+	}
+}
+
+// overlayAt draws box with its top left corner at column x, line y of lines.
+func overlayAt(lines, box []string, x, y int) {
+	for i, l := range box {
+		if j := y + i; j >= 0 && j < len(lines) {
+			s := ansi.Truncate(lines[j], x, "")
+			tail := ansi.TruncateLeft(lines[j], x+ansi.StringWidth(l), "")
+			lines[j] = s + "\x1b[0m" + strings.Repeat(" ", max(0, x-ansi.StringWidth(s))) + l + tail
 		}
 	}
 }
